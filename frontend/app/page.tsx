@@ -4,7 +4,7 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { Search, Package, DollarSign, Hash, ChevronRight, Loader2 } from "lucide-react"
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ""
 
 export default function HomePage() {
   const router = useRouter()
@@ -24,6 +24,8 @@ export default function HomePage() {
 
     setLoading(true)
     try {
+      if (!API_URL) throw new Error("API no configurada — contacta al administrador")
+
       const res = await fetch(`${API_URL}/validar`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -35,8 +37,14 @@ export default function HomePage() {
       })
 
       if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.detail || "Error al iniciar el análisis")
+        let msg = `Error ${res.status}`
+        try {
+          const data = await res.json()
+          msg = data.detail || msg
+        } catch {
+          // respuesta no es JSON (página de error HTML del servidor)
+        }
+        throw new Error(msg)
       }
 
       const { job_id } = await res.json()
