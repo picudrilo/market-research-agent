@@ -5,7 +5,8 @@ import { useParams, useSearchParams, useRouter } from "next/navigation"
 import {
   CheckCircle2, XCircle, AlertTriangle, Loader2,
   TrendingUp, TrendingDown, DollarSign, Package,
-  ArrowLeft, Tag, Zap, Shield, ExternalLink, BarChart2
+  ArrowLeft, Tag, Zap, Shield, ExternalLink, BarChart2,
+  Sparkles, RefreshCw
 } from "lucide-react"
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL
@@ -21,6 +22,7 @@ interface ProgressEvent {
 }
 
 interface AnalysisResult {
+  modo: string
   mercado: string
   producto: string
   precio_compra_mx: number
@@ -29,6 +31,7 @@ interface AnalysisResult {
   precio_amazon_mx: number
   ventas_mes: number
   asin: string
+  // Arbitraje fields
   veredicto: "COMPRA" | "NO COMPRA" | "RIESGO MEDIO"
   score_oportunidad: number
   roi_estimado_pct: number
@@ -42,6 +45,7 @@ interface AnalysisResult {
   resumen_ejecutivo: string
   riesgos: string[]
   acciones_inmediatas: string[]
+  // Marca propia fields
   listing: {
     titulo: string
     precio_lanzamiento: number
@@ -82,19 +86,16 @@ function verdictColor(v: string) {
   if (v === "NO COMPRA") return "text-red-400"
   return "text-amber-400"
 }
-
 function verdictBg(v: string) {
   if (v === "COMPRA") return "bg-emerald-950/60 border-emerald-800/50"
   if (v === "NO COMPRA") return "bg-red-950/60 border-red-800/50"
   return "bg-amber-950/60 border-amber-800/50"
 }
-
 function verdictIcon(v: string) {
   if (v === "COMPRA") return <CheckCircle2 className="w-8 h-8 text-emerald-400" />
   if (v === "NO COMPRA") return <XCircle className="w-8 h-8 text-red-400" />
   return <AlertTriangle className="w-8 h-8 text-amber-400" />
 }
-
 function fmt(n: number) {
   return n.toLocaleString("es-MX", { minimumFractionDigits: 0, maximumFractionDigits: 0 })
 }
@@ -110,11 +111,14 @@ export default function AnalisisPage() {
   const urlAmazon    = searchParams.get("url") || ""
   const precioAmazon = parseFloat(searchParams.get("precioAmazon") || "0")
   const ventasMes    = parseInt(searchParams.get("ventasMes") || "0")
+  const modoParam    = searchParams.get("modo") || "arbitraje"
 
   const [steps,  setSteps]  = useState<Step[]>([])
   const [result, setResult] = useState<AnalysisResult | null>(null)
   const [error,  setError]  = useState("")
   const [done,   setDone]   = useState(false)
+
+  const esArbitraje = (result?.modo || modoParam) === "arbitraje"
 
   const esRef   = useRef<EventSource | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -184,9 +188,7 @@ export default function AnalisisPage() {
     }
 
     es.onerror = () => {
-      if (es.readyState === EventSource.CLOSED) {
-        startPolling()
-      }
+      if (es.readyState === EventSource.CLOSED) startPolling()
     }
 
     return () => {
@@ -195,11 +197,10 @@ export default function AnalisisPage() {
     }
   }, [jobId])
 
-  const progress = done ? 100 : steps.length > 0
-    ? Math.round((steps.filter((s: Step) => s.status === "done").length / 10) * 100)
-    : 0
+  const doneSteps = steps.filter((s: Step) => s.status === "done").length
+  const totalSteps = esArbitraje ? 8 : 10
+  const progress = done ? 100 : Math.round((doneSteps / totalSteps) * 100)
 
-  // Use real Amazon price if available, fall back to result price
   const displayAsin    = result?.asin || ""
   const displayUrl     = result?.url_amazon || urlAmazon
   const displayVentas  = result?.ventas_mes || ventasMes
@@ -219,15 +220,21 @@ export default function AnalisisPage() {
       {/* Product header */}
       <div className="mb-6">
         <div className="flex items-center gap-2 mb-1">
-          <Package className="w-4 h-4 text-zinc-500" />
-          <span className="text-xs text-zinc-500 uppercase tracking-wider">Producto</span>
+          {esArbitraje
+            ? <RefreshCw className="w-4 h-4 text-zinc-500" />
+            : <Sparkles  className="w-4 h-4 text-zinc-500" />}
+          <span className="text-xs text-zinc-500 uppercase tracking-wider">
+            {esArbitraje ? "Análisis de arbitraje" : "Investigación de mercado"}
+          </span>
         </div>
         <h1 className="text-lg font-semibold text-zinc-100 leading-snug">{producto}</h1>
-        <p className="text-sm text-zinc-500 mt-0.5">
-          MX${fmt(precio)} × {unidades} pz — Inversión MX${fmt(precio * unidades)}
-        </p>
+        {esArbitraje && precio > 0 && (
+          <p className="text-sm text-zinc-500 mt-0.5">
+            MX${fmt(precio)} × {unidades} pz — Inversión MX${fmt(precio * unidades)}
+          </p>
+        )}
 
-        {/* ASIN + Amazon link */}
+        {/* ASIN + link */}
         {(displayAsin || displayUrl) && (
           <div className="flex items-center gap-3 mt-2 flex-wrap">
             {displayAsin && (
@@ -237,14 +244,9 @@ export default function AnalisisPage() {
               </span>
             )}
             {displayUrl && (
-              <a
-                href={displayUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
-              >
-                Ver en Amazon
-                <ExternalLink className="w-3 h-3" />
+              <a href={displayUrl} target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300 transition-colors">
+                Ver en Amazon <ExternalLink className="w-3 h-3" />
               </a>
             )}
           </div>
@@ -255,14 +257,12 @@ export default function AnalisisPage() {
       {!done && (
         <div className="mb-6">
           <div className="flex justify-between items-center mb-2">
-            <span className="text-xs text-zinc-500">Analizando mercado...</span>
+            <span className="text-xs text-zinc-500">Analizando...</span>
             <span className="text-xs text-zinc-500">{progress}%</span>
           </div>
           <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-zinc-300 rounded-full transition-all duration-500"
-              style={{ width: `${progress}%` }}
-            />
+            <div className="h-full bg-zinc-300 rounded-full transition-all duration-500"
+              style={{ width: `${progress}%` }} />
           </div>
         </div>
       )}
@@ -274,208 +274,245 @@ export default function AnalisisPage() {
         </div>
       )}
 
-      {/* Results */}
+      {/* ── RESULTS ── */}
       {result && (
-        <div className="flex flex-col gap-5 animate-slide-up">
+        <div className="flex flex-col gap-5">
 
-          {/* Verdict card */}
-          <div className={`border rounded-2xl p-5 ${verdictBg(result.veredicto)}`}>
-            <div className="flex items-center gap-3 mb-3">
-              {verdictIcon(result.veredicto)}
-              <div>
-                <div className={`text-2xl font-bold ${verdictColor(result.veredicto)}`}>
-                  {result.veredicto}
-                </div>
-                <div className="text-xs text-zinc-500">
-                  Score: {result.score_oportunidad}/100 · {result.mercado}
-                </div>
-              </div>
-            </div>
-            <p className="text-sm text-zinc-300 leading-relaxed">
-              {result.razon_principal}
-            </p>
-          </div>
-
-          {/* Real market data banner (if provided) */}
-          {(displayPrecioA > 0 || displayVentas > 0) && (
-            <div className="bg-zinc-900 border border-zinc-700 rounded-2xl p-4">
-              <div className="flex items-center gap-2 mb-3">
-                <BarChart2 className="w-3.5 h-3.5 text-zinc-400" />
-                <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
-                  Datos reales del producto en Amazon
-                </h3>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                {displayPrecioA > 0 && (
-                  <div>
-                    <div className="text-lg font-bold text-zinc-100">MX${fmt(displayPrecioA)}</div>
-                    <div className="text-xs text-zinc-500">Precio actual en Amazon</div>
-                  </div>
-                )}
-                {displayVentas > 0 && (
-                  <div>
-                    <div className="text-lg font-bold text-zinc-100">{fmt(displayVentas)}</div>
-                    <div className="text-xs text-zinc-500">Unidades vendidas/mes</div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Key numbers */}
-          <div className="grid grid-cols-2 gap-3">
-            <Stat
-              icon={<TrendingUp className="w-4 h-4 text-emerald-400" />}
-              label="ROI estimado"
-              value={`${result.roi_estimado_pct}%`}
-              highlight={result.roi_estimado_pct > 20}
-            />
-            <Stat
-              icon={<DollarSign className="w-4 h-4 text-zinc-400" />}
-              label="Precio de venta"
-              value={`MX$${fmt(result.precio_venta_recomendado_mx)}`}
-            />
-            <Stat
-              icon={<TrendingUp className="w-4 h-4 text-zinc-400" />}
-              label="Ganancia x unidad"
-              value={`MX$${fmt(result.ganancia_por_unidad_mx)}`}
-              highlight={result.ganancia_por_unidad_mx > 0}
-            />
-            <Stat
-              icon={<TrendingDown className="w-4 h-4 text-zinc-400" />}
-              label="Ganancia total"
-              value={`MX$${fmt(result.ganancia_total_estimada_mx)}`}
-              highlight={result.ganancia_total_estimada_mx > 0}
-            />
-          </div>
-
-          {/* Fee breakdown */}
-          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
-            <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">
-              Desglose de costos por unidad
-            </h3>
-            <div className="flex flex-col gap-2 text-sm">
-              <FeeRow label="Precio de compra" value={`MX$${fmt(result.precio_compra_mx)}`} />
-              <FeeRow label="Referral fee Amazon (15%)" value={`-MX$${fmt(result.referral_fee_mx)}`} negative />
-              <FeeRow label="FBA fee estimado" value={`-MX$${fmt(result.fba_fee_estimado_mx)}`} negative />
-              <div className="border-t border-zinc-800 pt-2 mt-1 flex justify-between font-semibold">
-                <span className="text-zinc-300">Ganancia neta</span>
-                <span className={result.ganancia_por_unidad_mx >= 0 ? "text-emerald-400" : "text-red-400"}>
-                  MX${fmt(result.ganancia_por_unidad_mx)}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Summary */}
-          {result.resumen_ejecutivo && (
-            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
-              <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">
-                Resumen ejecutivo
-              </h3>
-              <p className="text-sm text-zinc-300 leading-relaxed">{result.resumen_ejecutivo}</p>
-            </div>
-          )}
-
-          {/* Actions */}
-          {result.acciones_inmediatas.length > 0 && (
-            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
-              <div className="flex items-center gap-2 mb-3">
-                <Zap className="w-3.5 h-3.5 text-amber-400" />
-                <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
-                  Acciones inmediatas
-                </h3>
-              </div>
-              <ol className="flex flex-col gap-2">
-                {result.acciones_inmediatas.map((a, i) => (
-                  <li key={i} className="flex gap-2.5 text-sm text-zinc-300">
-                    <span className="text-zinc-600 font-mono text-xs mt-0.5 shrink-0">{i + 1}.</span>
-                    {a}
-                  </li>
-                ))}
-              </ol>
-            </div>
-          )}
-
-          {/* Risks */}
-          {result.riesgos.length > 0 && (
-            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
-              <div className="flex items-center gap-2 mb-3">
-                <Shield className="w-3.5 h-3.5 text-red-400" />
-                <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
-                  Riesgos a considerar
-                </h3>
-              </div>
-              <ul className="flex flex-col gap-2">
-                {result.riesgos.map((r, i) => (
-                  <li key={i} className="flex gap-2.5 text-sm text-zinc-400">
-                    <span className="text-red-800 shrink-0">·</span>
-                    {r}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {/* Recovery time */}
-          {result.tiempo_recuperacion && (
-            <p className="text-center text-xs text-zinc-600 pb-2">
-              Tiempo estimado de recuperación: {result.tiempo_recuperacion}
-            </p>
-          )}
-
-          {/* Market opportunity separator */}
-          {(result.concepto.nombre || result.listing.titulo) && (
+          {/* ══ ARBITRAJE LAYOUT ══ */}
+          {esArbitraje && (
             <>
-              <div className="flex items-center gap-3 pt-2">
-                <div className="flex-1 h-px bg-zinc-800" />
-                <span className="text-xs text-zinc-600">Oportunidad de mercado</span>
-                <div className="flex-1 h-px bg-zinc-800" />
+              {/* Verdict */}
+              <div className={`border rounded-2xl p-5 ${verdictBg(result.veredicto)}`}>
+                <div className="flex items-center gap-3 mb-3">
+                  {verdictIcon(result.veredicto)}
+                  <div>
+                    <div className={`text-2xl font-bold ${verdictColor(result.veredicto)}`}>
+                      {result.veredicto}
+                    </div>
+                    <div className="text-xs text-zinc-500">
+                      Score: {result.score_oportunidad}/100 · {result.mercado}
+                    </div>
+                  </div>
+                </div>
+                <p className="text-sm text-zinc-300 leading-relaxed">{result.razon_principal}</p>
               </div>
-              <p className="text-xs text-zinc-600 text-center -mt-3">
-                Si en lugar de arbitraje quisieras lanzar tu propia marca en este mercado:
-              </p>
+
+              {/* Real Amazon data */}
+              {(displayPrecioA > 0 || displayVentas > 0) && (
+                <div className="bg-zinc-900 border border-zinc-700 rounded-2xl p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <BarChart2 className="w-3.5 h-3.5 text-zinc-400" />
+                    <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
+                      Datos reales en Amazon
+                    </h3>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    {displayPrecioA > 0 && (
+                      <div>
+                        <div className="text-lg font-bold text-zinc-100">MX${fmt(displayPrecioA)}</div>
+                        <div className="text-xs text-zinc-500">Precio actual</div>
+                      </div>
+                    )}
+                    {displayVentas > 0 && (
+                      <div>
+                        <div className="text-lg font-bold text-zinc-100">{fmt(displayVentas)}</div>
+                        <div className="text-xs text-zinc-500">Unidades/mes</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Key numbers */}
+              <div className="grid grid-cols-2 gap-3">
+                <Stat icon={<TrendingUp className="w-4 h-4 text-emerald-400" />}
+                  label="ROI estimado" value={`${result.roi_estimado_pct}%`}
+                  highlight={result.roi_estimado_pct > 20} />
+                <Stat icon={<DollarSign className="w-4 h-4 text-zinc-400" />}
+                  label="Precio de venta" value={`MX$${fmt(result.precio_venta_recomendado_mx)}`} />
+                <Stat icon={<TrendingUp className="w-4 h-4 text-zinc-400" />}
+                  label="Ganancia x unidad" value={`MX$${fmt(result.ganancia_por_unidad_mx)}`}
+                  highlight={result.ganancia_por_unidad_mx > 0} />
+                <Stat icon={<TrendingDown className="w-4 h-4 text-zinc-400" />}
+                  label="Ganancia total" value={`MX$${fmt(result.ganancia_total_estimada_mx)}`}
+                  highlight={result.ganancia_total_estimada_mx > 0} />
+              </div>
+
+              {/* Fee breakdown */}
+              <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
+                <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">
+                  Desglose por unidad
+                </h3>
+                <div className="flex flex-col gap-2 text-sm">
+                  <FeeRow label="Precio de compra" value={`MX$${fmt(result.precio_compra_mx)}`} />
+                  <FeeRow label="Referral fee (15%)" value={`-MX$${fmt(result.referral_fee_mx)}`} negative />
+                  <FeeRow label="FBA fee estimado"  value={`-MX$${fmt(result.fba_fee_estimado_mx)}`} negative />
+                  <div className="border-t border-zinc-800 pt-2 mt-1 flex justify-between font-semibold">
+                    <span className="text-zinc-300">Ganancia neta</span>
+                    <span className={result.ganancia_por_unidad_mx >= 0 ? "text-emerald-400" : "text-red-400"}>
+                      MX${fmt(result.ganancia_por_unidad_mx)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Summary */}
+              {result.resumen_ejecutivo && (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
+                  <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">
+                    Resumen ejecutivo
+                  </h3>
+                  <p className="text-sm text-zinc-300 leading-relaxed">{result.resumen_ejecutivo}</p>
+                </div>
+              )}
+
+              {/* Actions */}
+              {result.acciones_inmediatas?.length > 0 && (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Zap className="w-3.5 h-3.5 text-amber-400" />
+                    <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
+                      Acciones inmediatas
+                    </h3>
+                  </div>
+                  <ol className="flex flex-col gap-2">
+                    {result.acciones_inmediatas.map((a, i) => (
+                      <li key={i} className="flex gap-2.5 text-sm text-zinc-300">
+                        <span className="text-zinc-600 font-mono text-xs mt-0.5 shrink-0">{i + 1}.</span>
+                        {a}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+
+              {/* Risks */}
+              {result.riesgos?.length > 0 && (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Shield className="w-3.5 h-3.5 text-red-400" />
+                    <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
+                      Riesgos
+                    </h3>
+                  </div>
+                  <ul className="flex flex-col gap-2">
+                    {result.riesgos.map((r, i) => (
+                      <li key={i} className="flex gap-2.5 text-sm text-zinc-400">
+                        <span className="text-red-800 shrink-0">·</span>{r}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {result.tiempo_recuperacion && (
+                <p className="text-center text-xs text-zinc-600 pb-2">
+                  Tiempo estimado de recuperación: {result.tiempo_recuperacion}
+                </p>
+              )}
             </>
           )}
 
-          {/* Brand concept */}
-          {result.concepto.nombre && (
-            <div className="bg-zinc-900/50 border border-zinc-800/50 rounded-2xl p-4">
-              <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">
-                Concepto de marca sugerido
-              </h3>
-              <p className="text-sm font-semibold text-zinc-200">{result.concepto.nombre}</p>
-              <p className="text-sm text-zinc-500 mt-1">{result.concepto.tagline}</p>
-            </div>
-          )}
-
-          {/* Listing title */}
-          {result.listing.titulo && (
-            <div className="bg-zinc-900/50 border border-zinc-800/50 rounded-2xl p-4">
-              <div className="flex items-center gap-2 mb-2">
-                <Tag className="w-3.5 h-3.5 text-zinc-600" />
-                <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
-                  Título de listing sugerido
-                </h3>
+          {/* ══ MARCA PROPIA LAYOUT ══ */}
+          {!esArbitraje && (
+            <>
+              {/* Market header card */}
+              <div className="bg-zinc-900 border border-zinc-700 rounded-2xl p-5">
+                <div className="flex items-center gap-2 mb-1">
+                  <Sparkles className="w-4 h-4 text-zinc-400" />
+                  <span className="text-xs text-zinc-500 uppercase tracking-wider">Mercado analizado</span>
+                </div>
+                <p className="text-xl font-bold text-zinc-100 capitalize">{result.mercado}</p>
+                {result.keyword_principal && (
+                  <div className="mt-2 inline-block bg-zinc-800 rounded-lg px-2.5 py-1 text-xs text-zinc-400">
+                    Keyword principal: <span className="text-zinc-200 font-medium">{result.keyword_principal}</span>
+                  </div>
+                )}
               </div>
-              <p className="text-sm text-zinc-400 leading-relaxed">{result.listing.titulo}</p>
-              {result.keyword_principal && (
-                <div className="mt-2 inline-block bg-zinc-800/50 rounded-lg px-2.5 py-1 text-xs text-zinc-500">
-                  Keyword: {result.keyword_principal}
+
+              {/* Brand concept */}
+              {result.concepto?.nombre && (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5">
+                  <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">
+                    Concepto de marca
+                  </h3>
+                  <p className="text-xl font-bold text-zinc-50 mb-1">{result.concepto.nombre}</p>
+                  <p className="text-sm text-zinc-400 italic mb-3">{result.concepto.tagline}</p>
+                  {result.concepto.mensaje_central && (
+                    <p className="text-sm text-zinc-300 leading-relaxed border-t border-zinc-800 pt-3">
+                      {result.concepto.mensaje_central}
+                    </p>
+                  )}
                 </div>
               )}
-            </div>
+
+              {/* Listing title */}
+              {result.listing?.titulo && (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Tag className="w-3.5 h-3.5 text-zinc-500" />
+                    <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
+                      Título de listing
+                    </h3>
+                  </div>
+                  <p className="text-sm text-zinc-200 leading-relaxed">{result.listing.titulo}</p>
+                </div>
+              )}
+
+              {/* Bullets */}
+              {result.listing?.top_bullets?.length > 0 && (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
+                  <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">
+                    Bullets principales
+                  </h3>
+                  <ul className="flex flex-col gap-2">
+                    {result.listing.top_bullets.map((b, i) => (
+                      <li key={i} className="flex gap-2.5 text-sm text-zinc-300">
+                        <span className="text-zinc-600 shrink-0 mt-0.5">·</span>{b}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Price recommendations */}
+              {(result.listing?.precio_lanzamiento > 0 || result.listing?.precio_objetivo > 0) && (
+                <div className="grid grid-cols-2 gap-3">
+                  {result.listing.precio_lanzamiento > 0 && (
+                    <Stat icon={<DollarSign className="w-4 h-4 text-zinc-400" />}
+                      label="Precio lanzamiento"
+                      value={`MX$${fmt(result.listing.precio_lanzamiento)}`} />
+                  )}
+                  {result.listing.precio_objetivo > 0 && (
+                    <Stat icon={<TrendingUp className="w-4 h-4 text-emerald-400" />}
+                      label="Precio objetivo"
+                      value={`MX$${fmt(result.listing.precio_objetivo)}`}
+                      highlight />
+                  )}
+                </div>
+              )}
+
+              {/* Backend terms */}
+              {result.listing?.terminos_backend?.length > 0 && (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
+                  <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">
+                    Términos backend (SEO oculto)
+                  </h3>
+                  <p className="text-xs text-zinc-500 leading-relaxed font-mono">
+                    {result.listing.terminos_backend.join(", ")}
+                  </p>
+                </div>
+              )}
+            </>
           )}
 
         </div>
       )}
 
-      {/* Steps list while running */}
+      {/* Steps while running */}
       {!done && steps.length > 0 && (
         <div className="flex flex-col gap-2 mt-2">
-          {steps.map((s) => (
-            <StepRow key={s.step} step={s} />
-          ))}
+          {steps.map((s) => <StepRow key={s.step} step={s} />)}
         </div>
       )}
 
@@ -490,20 +527,13 @@ export default function AnalisisPage() {
   )
 }
 
-function Stat({
-  icon, label, value, highlight = false
-}: {
-  icon: React.ReactNode
-  label: string
-  value: string
-  highlight?: boolean
+function Stat({ icon, label, value, highlight = false }: {
+  icon: React.ReactNode; label: string; value: string; highlight?: boolean
 }) {
   return (
     <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5">
       <div className="flex items-center gap-1.5 mb-1.5">{icon}</div>
-      <div className={`text-lg font-bold ${highlight ? "text-zinc-50" : "text-zinc-300"}`}>
-        {value}
-      </div>
+      <div className={`text-lg font-bold ${highlight ? "text-zinc-50" : "text-zinc-300"}`}>{value}</div>
       <div className="text-xs text-zinc-600">{label}</div>
     </div>
   )

@@ -46,11 +46,12 @@ _pipeline_lock = threading.Semaphore(1)
 
 class ValidarRequest(BaseModel):
     producto: str
-    precio_compra: float
+    precio_compra: float = 0
     unidades: int = 1
     url_amazon: str = ""
     precio_amazon: float = 0
     ventas_mes: int = 0
+    modo: str = "arbitraje"  # "arbitraje" | "marca_propia"
 
 
 def detectar_mercado(producto: str) -> str:
@@ -76,8 +77,10 @@ def detectar_mercado(producto: str) -> str:
 
 
 def ejecutar_pipeline(job_id: str, producto: str, precio_compra: float, unidades: int,
-                      url_amazon: str = "", precio_amazon: float = 0, ventas_mes: int = 0):
-    """Runs all 9 agents. Appends events to jobs[job_id]['events'] — no queue needed."""
+                      url_amazon: str = "", precio_amazon: float = 0, ventas_mes: int = 0,
+                      modo: str = "arbitraje"):
+    """Runs the agent pipeline. In arbitraje mode skips concepto/listado (steps 7-8).
+    In marca_propia mode skips the validador (step 9)."""
 
     def emit(event: dict):
         jobs[job_id]["events"].append(event)
@@ -106,17 +109,26 @@ def ejecutar_pipeline(job_id: str, producto: str, precio_compra: float, unidades
         limpiar_memoria()
 
         pasos = [
-            (1, "Ingesta de datos",           lambda: ingesta.ejecutar(mercado)),
-            (2, "Analisis de competencia",    lambda: competencia.ejecutar(mercado)),
-            (3, "Analisis de resenas",        lambda: resenas.ejecutar(mercado)),
-            (4, "GAP Analysis",               lambda: gap_analysis.ejecutar(mercado)),
-            (5, "Precio vs Valor",            lambda: precio_valor.ejecutar(mercado)),
-            (6, "Keywords y SEO",             lambda: keywords.ejecutar(mercado)),
-            (7, "Concepto de diferenciacion", lambda: concepto.ejecutar(mercado)),
-            (8, "Listado optimizado",         lambda: listado_optimizado.ejecutar(mercado)),
-            (9, "Validacion de arbitraje",    lambda: ejecutar_validador(producto, precio_compra, unidades, mercado,
-                                                                           url_amazon=url_amazon, precio_amazon=precio_amazon, ventas_mes=ventas_mes)),
+            (1, "Ingesta de datos",        lambda: ingesta.ejecutar(mercado)),
+            (2, "Analisis de competencia", lambda: competencia.ejecutar(mercado)),
+            (3, "Analisis de resenas",     lambda: resenas.ejecutar(mercado)),
+            (4, "GAP Analysis",            lambda: gap_analysis.ejecutar(mercado)),
+            (5, "Precio vs Valor",         lambda: precio_valor.ejecutar(mercado)),
+            (6, "Keywords y SEO",          lambda: keywords.ejecutar(mercado)),
         ]
+
+        if modo == "marca_propia":
+            pasos += [
+                (7, "Concepto de diferenciacion", lambda: concepto.ejecutar(mercado)),
+                (8, "Listado optimizado",         lambda: listado_optimizado.ejecutar(mercado)),
+            ]
+        else:  # arbitraje — skip concepto y listado, ir directo al validador
+            pasos += [
+                (9, "Validacion de arbitraje", lambda: ejecutar_validador(
+                    producto, precio_compra, unidades, mercado,
+                    url_amazon=url_amazon, precio_amazon=precio_amazon, ventas_mes=ventas_mes,
+                )),
+            ]
 
         resultados = {}
         for step, nombre, funcion in pasos:
@@ -136,6 +148,7 @@ def ejecutar_pipeline(job_id: str, producto: str, precio_compra: float, unidades
         validador_full = resultados.get("Validacion de arbitraje") or {}
 
         final = {
+            "modo":              modo,
             "mercado":           mercado,
             "producto":          producto,
             "precio_compra_mx":  precio_compra,
@@ -187,7 +200,7 @@ def ejecutar_pipeline(job_id: str, producto: str, precio_compra: float, unidades
 async def iniciar_validacion(request: ValidarRequest):
     if not request.producto.strip():
         raise HTTPException(400, "El nombre del producto es requerido")
-    if request.precio_compra <= 0:
+    if request.modo == "arbitraje" and request.precio_compra <= 0:
         raise HTTPException(400, "El precio de compra debe ser mayor a 0")
 
     job_id = str(uuid.uuid4())
@@ -197,9 +210,10 @@ async def iniciar_validacion(request: ValidarRequest):
         target=ejecutar_pipeline,
         args=(job_id, request.producto.strip(), request.precio_compra, request.unidades),
         kwargs={
-            "url_amazon":   request.url_amazon.strip(),
+            "url_amazon":    request.url_amazon.strip(),
             "precio_amazon": request.precio_amazon,
-            "ventas_mes":   request.ventas_mes,
+            "ventas_mes":    request.ventas_mes,
+            "modo":          request.modo,
         },
         daemon=True,
     ).start()
