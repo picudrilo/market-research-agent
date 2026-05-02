@@ -223,7 +223,10 @@ Genera exactamente 5 bullets."""
     except json.JSONDecodeError:
         inicio = texto.find("{")
         fin    = texto.rfind("}") + 1
-        analisis = json.loads(texto[inicio:fin]) if inicio != -1 else {}
+        try:
+            analisis = json.loads(texto[inicio:fin]) if inicio != -1 else {}
+        except (json.JSONDecodeError, ValueError):
+            analisis = {}
 
     analisis["_tokens"] = {
         "entrada": respuesta.usage.input_tokens,
@@ -328,13 +331,17 @@ def ejecutar(mercado="suplementos"):
     REPORTS_DIR.mkdir(exist_ok=True)
     OUTPUTS_DIR.mkdir(exist_ok=True)
 
-    df = cargar_keywords(mercado)
-    if df.empty:
-        print(f"\n  Sin keywords en DB para '{mercado}' — agente omitido")
-        return None
+    try:
+        df = cargar_keywords(mercado)
+    except Exception as e:
+        print(f"  keywords DB no disponible ({type(e).__name__}) — análisis desde contexto")
+        df = pd.DataFrame()
 
-    print(f"\n  {len(df)} keywords cargadas para '{mercado}'")
-    print(f"  Volumen top: {int(df['volumen_busqueda'].max()):,} ({df.iloc[0]['keyword']})")
+    if df.empty:
+        print(f"  Sin keywords para '{mercado}' — Claude infiere desde contexto acumulado")
+    else:
+        print(f"\n  {len(df)} keywords cargadas para '{mercado}'")
+        print(f"  Volumen top: {int(df['volumen_busqueda'].max()):,} ({df.iloc[0]['keyword']})")
 
     df_oportunidad = clasificar_oportunidad(df)
     clusters       = agrupar_clusters(df_oportunidad, mercado)

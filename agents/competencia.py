@@ -233,7 +233,10 @@ Responde ÚNICAMENTE con un JSON válido, sin backticks ni texto extra:
     except json.JSONDecodeError:
         inicio = texto.find("{")
         fin    = texto.rfind("}") + 1
-        analisis = json.loads(texto[inicio:fin]) if inicio != -1 else {}
+        try:
+            analisis = json.loads(texto[inicio:fin]) if inicio != -1 else {}
+        except (json.JSONDecodeError, ValueError):
+            analisis = {}
 
     analisis["_tokens"] = {
         "entrada": respuesta.usage.input_tokens,

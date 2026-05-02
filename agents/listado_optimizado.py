@@ -144,7 +144,10 @@ Genera exactamente 5 bullets y 7 imágenes."""
     except json.JSONDecodeError:
         inicio = texto.find("{")
         fin    = texto.rfind("}") + 1
-        listing = json.loads(texto[inicio:fin]) if inicio != -1 else {}
+        try:
+            listing = json.loads(texto[inicio:fin]) if inicio != -1 else {}
+        except (json.JSONDecodeError, ValueError):
+            listing = {}
 
     listing["_tokens"] = {
         "entrada": respuesta.usage.input_tokens,

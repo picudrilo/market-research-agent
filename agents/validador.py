@@ -116,7 +116,10 @@ score_oportunidad: entero de 0 a 100"""
     except json.JSONDecodeError:
         inicio = texto.find("{")
         fin    = texto.rfind("}") + 1
-        resultado = json.loads(texto[inicio:fin]) if inicio != -1 else {}
+        try:
+            resultado = json.loads(texto[inicio:fin]) if inicio != -1 else {}
+        except (json.JSONDecodeError, ValueError):
+            resultado = {}
 
     # Ensure asin is always in resultado
     if "asin" not in resultado or not resultado["asin"]:

@@ -102,7 +102,10 @@ Genera entre 5 y 8 gaps ordenados de mayor a menor oportunidad."""
     except json.JSONDecodeError:
         inicio = texto.find("{")
         fin    = texto.rfind("}") + 1
-        resultado = json.loads(texto[inicio:fin]) if inicio != -1 else {}
+        try:
+            resultado = json.loads(texto[inicio:fin]) if inicio != -1 else {}
+        except (json.JSONDecodeError, ValueError):
+            resultado = {}
 
     resultado["_tokens"] = {
         "entrada": respuesta.usage.input_tokens,

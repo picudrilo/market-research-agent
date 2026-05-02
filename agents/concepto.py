@@ -130,7 +130,10 @@ Genera exactamente 6-8 atributos diferenciadores con justificación en datos."""
     except json.JSONDecodeError:
         inicio = texto.find("{")
         fin    = texto.rfind("}") + 1
-        propuesta = json.loads(texto[inicio:fin]) if inicio != -1 else {}
+        try:
+            propuesta = json.loads(texto[inicio:fin]) if inicio != -1 else {}
+        except (json.JSONDecodeError, ValueError):
+            propuesta = {}
 
     propuesta["_tokens"] = {
         "entrada": respuesta.usage.input_tokens,
