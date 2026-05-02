@@ -149,9 +149,13 @@ export default function AnalisisPage() {
     }
 
     es.onerror = () => {
-      setError("Se perdió la conexión con el servidor")
-      setDone(true)
-      es.close()
+      // CONNECTING means EventSource is auto-reconnecting — do nothing.
+      // Backend replays all events from the start, so the client catches up.
+      // Only fail permanently if the browser has fully closed the connection.
+      if (es.readyState === EventSource.CLOSED) {
+        setError("Se perdió la conexión con el servidor")
+        setDone(true)
+      }
     }
 
     return () => es.close()
