@@ -244,28 +244,51 @@ async def health():
 @app.get("/test")
 async def test_conectividad():
     import httpx
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
     resultados: dict = {}
 
-    # 1. Test raw TCP/TLS to api.anthropic.com
-    try:
-        r = httpx.get("https://api.anthropic.com", timeout=10)
-        resultados["tcp_anthropic"] = {"status": "ok", "http_code": r.status_code}
-    except Exception as e:
-        resultados["tcp_anthropic"] = {"status": "error", "tipo": type(e).__name__, "msg": str(e)[:200]}
+    # 1. Proxy / base URL env vars que pueden interferir
+    resultados["env"] = {
+        "ANTHROPIC_BASE_URL": os.getenv("ANTHROPIC_BASE_URL", "no_set"),
+        "HTTPS_PROXY":        os.getenv("HTTPS_PROXY", "no_set"),
+        "HTTP_PROXY":         os.getenv("HTTP_PROXY", "no_set"),
+        "NO_PROXY":           os.getenv("NO_PROXY", "no_set"),
+    }
 
-    # 2. Test Anthropic SDK
+    # 2. Raw httpx POST directo a la API (sin SDK)
     try:
-        client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
-        r2 = client.messages.create(
+        r = httpx.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 5,
+                "messages": [{"role": "user", "content": "ok"}],
+            },
+            timeout=15,
+        )
+        resultados["raw_httpx_post"] = {"status": "ok", "http_code": r.status_code, "body": r.text[:120]}
+    except Exception as e:
+        resultados["raw_httpx_post"] = {"status": "error", "tipo": type(e).__name__, "msg": str(e)[:200]}
+
+    # 3. SDK con cliente httpx explícito (sin pool, sin proxies)
+    try:
+        custom = httpx.Client(timeout=20.0, trust_env=False)
+        client2 = Anthropic(api_key=api_key, http_client=custom)
+        r2 = client2.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=5,
-            messages=[{"role": "user", "content": "ok"}]
+            messages=[{"role": "user", "content": "ok"}],
         )
-        resultados["anthropic_sdk"] = {"status": "ok", "respuesta": r2.content[0].text}
+        resultados["sdk_custom_client"] = {"status": "ok", "respuesta": r2.content[0].text}
     except Exception as e:
-        resultados["anthropic_sdk"] = {"status": "error", "tipo": type(e).__name__, "msg": str(e)[:200]}
+        resultados["sdk_custom_client"] = {"status": "error", "tipo": type(e).__name__, "msg": str(e)[:200]}
 
-    # 3. Test PostgreSQL
+    # 4. PostgreSQL
     try:
         from sqlalchemy import create_engine, text as sql_text
         engine = create_engine(os.getenv("DATABASE_URL", ""))
