@@ -86,7 +86,7 @@ Genera entre 5 y 8 gaps ordenados de mayor a menor oportunidad."""
     print("  Claude analizando gaps de mercado...")
     respuesta = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=2000,
+        max_tokens=3000,
         system="Eres analista de mercado Amazon México. Respondes siempre con JSON válido.",
         messages=[{"role": "user", "content": prompt}]
     )
