@@ -52,7 +52,7 @@ class ValidarRequest(BaseModel):
 
 
 def detectar_mercado(producto: str) -> str:
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY no esta configurada en el servidor")
 
