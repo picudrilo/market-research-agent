@@ -280,8 +280,15 @@ export default function HomePage() {
 
       {/* Header */}
       <div className="mb-8">
-        <div className="w-10 h-10 bg-zinc-800 rounded-xl flex items-center justify-center mb-4">
-          <Search className="w-5 h-5 text-zinc-300" />
+        <div className="flex items-start justify-between mb-4">
+          <div className="w-10 h-10 bg-zinc-800 rounded-xl flex items-center justify-center">
+            <Search className="w-5 h-5 text-zinc-300" />
+          </div>
+          <button onClick={() => router.push("/portafolio")}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 text-xs rounded-lg transition-colors">
+            <TrendingUp className="w-3.5 h-3.5" />
+            Portafolio
+          </button>
         </div>
         <h1 className="text-2xl font-bold text-zinc-50 leading-tight">
           Validador de productos

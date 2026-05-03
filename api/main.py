@@ -515,6 +515,172 @@ async def iniciar_validacion_batch(request: ValidarBatchRequest):
     return {"job_id": job_id}
 
 
+# ─────────────────────────────────────────────
+# PORTAFOLIO DE INVERSIONES
+# ─────────────────────────────────────────────
+
+class InversionCreate(BaseModel):
+    asin: str
+    titulo: str = ""
+    unidades: int = 1
+    precio_compra_mx: float
+    fecha_compra: str   # YYYY-MM-DD
+    notas: str = ""
+
+
+class InversionUpdate(BaseModel):
+    precio_venta_real_mx: float | None = None
+    fecha_liquidacion: str | None = None
+    estado: str | None = None   # "activo" | "liquidado"
+    notas: str | None = None
+    roi_real_pct: float | None = None
+
+
+def _get_engine():
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        raise HTTPException(503, "DATABASE_URL no configurada")
+    from sqlalchemy import create_engine as _ce
+    return _ce(db_url)
+
+
+def _row_dict(r) -> dict:
+    return {
+        "id":                  r.id,
+        "asin":                r.asin,
+        "titulo":              r.titulo or "",
+        "unidades":            r.unidades,
+        "precio_compra_mx":    float(r.precio_compra_mx or 0),
+        "precio_venta_real_mx": float(r.precio_venta_real_mx) if r.precio_venta_real_mx is not None else None,
+        "fecha_compra":        str(r.fecha_compra),
+        "fecha_liquidacion":   str(r.fecha_liquidacion) if r.fecha_liquidacion else None,
+        "estado":              r.estado,
+        "roi_real_pct":        float(r.roi_real_pct) if r.roi_real_pct is not None else None,
+        "notas":               r.notas or "",
+        "created_at":          str(r.created_at),
+    }
+
+
+@app.get("/inversiones/resumen")
+async def resumen_inversiones():
+    from sqlalchemy import text as sql_text
+    from collections import defaultdict
+    import datetime
+
+    engine = _get_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(sql_text(
+            "SELECT id, asin, titulo, unidades, precio_compra_mx, precio_venta_real_mx, "
+            "fecha_compra, fecha_liquidacion, estado, roi_real_pct "
+            "FROM inversiones ORDER BY fecha_compra"
+        )).fetchall()
+
+    hoy = datetime.date.today()
+    capital_total = capital_activo = capital_liquidado = roi_sum = 0.0
+    roi_count = activas = liquidadas = 0
+    alerta_sin_vender: list = []
+
+    for r in rows:
+        cap = float(r.precio_compra_mx or 0) * (r.unidades or 1)
+        capital_total += cap
+        if r.estado == "liquidado":
+            capital_liquidado += cap
+            liquidadas += 1
+            if r.roi_real_pct is not None:
+                roi_sum += float(r.roi_real_pct)
+                roi_count += 1
+        else:
+            capital_activo += cap
+            activas += 1
+            dias = (hoy - r.fecha_compra).days
+            if dias > 45:
+                alerta_sin_vender.append({
+                    "id": r.id, "asin": r.asin,
+                    "titulo": r.titulo or r.asin, "dias": dias, "capital": round(cap, 2),
+                })
+
+    mensual: dict = defaultdict(lambda: {"capital": 0.0, "ganancia": 0.0, "count": 0})
+    for r in rows:
+        if r.estado == "liquidado" and r.fecha_liquidacion and r.roi_real_pct is not None:
+            mes = str(r.fecha_liquidacion)[:7]
+            cap = float(r.precio_compra_mx or 0) * (r.unidades or 1)
+            mensual[mes]["capital"]  += cap
+            mensual[mes]["ganancia"] += cap * float(r.roi_real_pct) / 100
+            mensual[mes]["count"]    += 1
+
+    return {
+        "capital_total_invertido": round(capital_total, 2),
+        "capital_activo":          round(capital_activo, 2),
+        "capital_liquidado":       round(capital_liquidado, 2),
+        "roi_real_promedio":       round(roi_sum / roi_count, 1) if roi_count else 0,
+        "total_inversiones":       len(rows),
+        "activas":                 activas,
+        "liquidadas":              liquidadas,
+        "alerta_sin_vender":       alerta_sin_vender,
+        "historial_mensual":       [{"mes": m, **d} for m, d in sorted(mensual.items())],
+    }
+
+
+@app.get("/inversiones")
+async def listar_inversiones():
+    from sqlalchemy import text as sql_text
+    engine = _get_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(sql_text(
+            "SELECT id, asin, titulo, unidades, precio_compra_mx, precio_venta_real_mx, "
+            "fecha_compra, fecha_liquidacion, estado, roi_real_pct, notas, created_at "
+            "FROM inversiones ORDER BY created_at DESC"
+        )).fetchall()
+    return [_row_dict(r) for r in rows]
+
+
+@app.post("/inversiones")
+async def crear_inversion(inv: InversionCreate):
+    from sqlalchemy import text as sql_text
+    engine = _get_engine()
+    with engine.connect() as conn:
+        result = conn.execute(sql_text(
+            "INSERT INTO inversiones (asin, titulo, unidades, precio_compra_mx, fecha_compra, notas) "
+            "VALUES (:asin, :titulo, :unidades, :precio_compra_mx, :fecha_compra, :notas) "
+            "RETURNING id, created_at"
+        ), {
+            "asin": inv.asin, "titulo": inv.titulo, "unidades": inv.unidades,
+            "precio_compra_mx": inv.precio_compra_mx, "fecha_compra": inv.fecha_compra,
+            "notas": inv.notas,
+        })
+        conn.commit()
+        row = result.fetchone()
+    return {"id": row.id, "created_at": str(row.created_at)}
+
+
+@app.put("/inversiones/{inv_id}")
+async def actualizar_inversion(inv_id: int, upd: InversionUpdate):
+    from sqlalchemy import text as sql_text
+    engine = _get_engine()
+    sets, params = [], {"id": inv_id}
+    if upd.precio_venta_real_mx is not None:
+        sets.append("precio_venta_real_mx = :precio_venta_real_mx")
+        params["precio_venta_real_mx"] = upd.precio_venta_real_mx
+    if upd.fecha_liquidacion is not None:
+        sets.append("fecha_liquidacion = :fecha_liquidacion")
+        params["fecha_liquidacion"] = upd.fecha_liquidacion
+    if upd.estado is not None:
+        sets.append("estado = :estado")
+        params["estado"] = upd.estado
+    if upd.notas is not None:
+        sets.append("notas = :notas")
+        params["notas"] = upd.notas
+    if upd.roi_real_pct is not None:
+        sets.append("roi_real_pct = :roi_real_pct")
+        params["roi_real_pct"] = upd.roi_real_pct
+    if not sets:
+        raise HTTPException(400, "No hay campos para actualizar")
+    with engine.connect() as conn:
+        conn.execute(sql_text(f"UPDATE inversiones SET {', '.join(sets)} WHERE id = :id"), params)
+        conn.commit()
+    return {"ok": True}
+
+
 @app.get("/health")
 async def health():
     return {
