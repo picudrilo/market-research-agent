@@ -27,6 +27,9 @@ from agents import (
 )
 from agents.memoria import limpiar_memoria, leer_memoria
 from agents.validador import ejecutar as ejecutar_validador
+from agents.batch_arbitraje import ejecutar as ejecutar_batch
+import pandas as pd
+import io
 
 app = FastAPI(title="Market Research Validator API", version="1.0.0")
 
@@ -274,6 +277,165 @@ async def obtener_resultado(job_id: str):
         raise HTTPException(404, "Job no encontrado")
     job = jobs[job_id]
     return {"status": job["status"], "result": job.get("result")}
+
+
+@app.get("/resultado-batch/{job_id}")
+async def obtener_resultado_batch(job_id: str):
+    if job_id not in jobs:
+        raise HTTPException(404, "Job no encontrado")
+    job = jobs[job_id]
+    return {"status": job["status"], "result": job.get("result")}
+
+
+# ─────────────────────────────────────────────
+# BATCH ARBITRAJE
+# ─────────────────────────────────────────────
+
+class ProductoBatch(BaseModel):
+    asin: str
+    precio_compra: float
+
+
+class ValidarBatchRequest(BaseModel):
+    productos: list[ProductoBatch]          # ASINs + precios de compra de la UI
+    csv_data:  str                          # CSV Xray completo en base64 o texto plano
+    nombre_sesion: str = "sesion_batch"
+
+
+def ejecutar_pipeline_batch(job_id: str, csv_texto: str,
+                            precios_ui: dict, nombre_sesion: str):
+    """
+    Corre el análisis batch de arbitraje:
+    1. Parsea el CSV Xray
+    2. Calcula financiero + score (sin Claude)
+    3. Llama a Claude 1 vez para análisis cualitativo
+    4. Escribe historial markdown
+    5. Emite resultado final vía SSE
+    """
+    def emit(event: dict):
+        jobs[job_id]["events"].append(event)
+
+    def prog(step: int, mensaje: str, status: str = "running"):
+        emit({
+            "type":    "progress",
+            "step":    step,
+            "total":   4,
+            "message": mensaje,
+            "status":  status,
+        })
+
+    acquired = _pipeline_lock.acquire(timeout=5)
+    if not acquired:
+        emit({"type": "error", "message": "Servidor ocupado. Intenta en 30 segundos."})
+        jobs[job_id]["status"] = "error"
+        return
+
+    try:
+        prog(1, "Leyendo CSV y calculando financiero...")
+        try:
+            df = pd.read_csv(io.StringIO(csv_texto), encoding="utf-8")
+        except Exception:
+            df = pd.read_csv(io.StringIO(csv_texto), encoding="latin-1")
+
+        prog(1, "Cálculo financiero completado", "done")
+
+        prog(2, "Consultando historial en base de datos...")
+        engine = None
+        db_url = os.getenv("DATABASE_URL")
+        if db_url:
+            from sqlalchemy import create_engine as _ce
+            engine = _ce(db_url)
+        prog(2, "Historial consultado", "done")
+
+        prog(3, "Claude analizando productos en batch (1 llamada)...")
+        resultado, batch_meta = ejecutar_batch(
+            df,
+            nombre_sesion=nombre_sesion,
+            precios_extra=precios_ui,
+            engine=engine,
+        )
+        prog(3, f"{len(resultado)} productos analizados por Claude", "done")
+
+        prog(4, "Generando historial y resultados finales...")
+
+        # Serializar resultado para JSON (quitar objetos no serializables)
+        def serializar(p):
+            return {
+                "asin":           p["asin"],
+                "titulo":         p.get("titulo", ""),
+                "marca":          p.get("marca", ""),
+                "categoria":      p.get("categoria"),
+                "score_arbitraje": p.get("score_arbitraje", 0),
+                "semaforo":       p.get("semaforo", "DESCARTAR"),
+                "en_historial_bd": p.get("en_historial_bd", False),
+                "financiero":     p.get("financiero"),
+                "claude_analisis": p.get("claude_analisis", {}),
+                # Datos de mercado del CSV
+                "bsr":            p.get("bsr"),
+                "reviews_count":  p.get("reviews_count"),
+                "rating":         p.get("rating"),
+                "ventas_mes":     p.get("ventas_mes"),
+                "active_sellers": p.get("active_sellers"),
+                "fba":            p.get("fba", False),
+            }
+
+        final = {
+            "modo":            "batch_arbitraje",
+            "nombre_sesion":   nombre_sesion,
+            "total":           len(resultado),
+            "invertir":        sum(1 for p in resultado if p["semaforo"] == "INVERTIR"),
+            "riesgo_medio":    sum(1 for p in resultado if p["semaforo"] == "RIESGO MEDIO"),
+            "descartar":       sum(1 for p in resultado if p["semaforo"] == "DESCARTAR"),
+            "capital_invertir": sum(
+                (p.get("financiero") or {}).get("precio_compra", 0)
+                for p in resultado if p["semaforo"] == "INVERTIR"
+            ),
+            "roi_promedio_invertir": (
+                round(
+                    sum((p.get("financiero") or {}).get("roi", 0)
+                        for p in resultado if p["semaforo"] == "INVERTIR") /
+                    max(sum(1 for p in resultado if p["semaforo"] == "INVERTIR"), 1),
+                    1
+                )
+            ),
+            "productos":       [serializar(p) for p in resultado],
+            "batch_meta":      batch_meta,
+        }
+
+        jobs[job_id]["result"] = final
+        jobs[job_id]["status"] = "done"
+        prog(4, "Análisis batch completado", "done")
+        emit({"type": "done", "result": final})
+
+    except Exception as e:
+        jobs[job_id]["status"] = "error"
+        emit({"type": "error", "message": str(e)})
+    finally:
+        _pipeline_lock.release()
+
+
+@app.post("/validar-batch")
+async def iniciar_validacion_batch(request: ValidarBatchRequest):
+    """
+    Inicia un análisis batch de arbitraje.
+    Acepta CSV Xray (texto plano) + lista de {asin, precio_compra} de la UI.
+    Retorna job_id para seguir progreso en /stream/{job_id}.
+    """
+    if not request.csv_data.strip():
+        raise HTTPException(400, "csv_data está vacío")
+
+    precios_ui = {p.asin: p.precio_compra for p in request.productos if p.precio_compra > 0}
+
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {"events": [], "result": None, "status": "pending"}
+
+    threading.Thread(
+        target=ejecutar_pipeline_batch,
+        args=(job_id, request.csv_data, precios_ui, request.nombre_sesion),
+        daemon=True,
+    ).start()
+
+    return {"job_id": job_id}
 
 
 @app.get("/health")
