@@ -6,7 +6,7 @@ import {
   CheckCircle2, XCircle, AlertTriangle, Loader2,
   TrendingUp, TrendingDown, DollarSign, Package,
   ArrowLeft, Tag, Zap, Shield, ExternalLink, BarChart2,
-  Sparkles, RefreshCw
+  Sparkles, RefreshCw, History, ChevronDown, ChevronUp,
 } from "lucide-react"
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL
@@ -68,6 +68,22 @@ interface AnalysisResult {
     advertencia:                string
     puede_vender_sin_marca:     boolean
   }
+  decision_id?: number
+  decisiones_previas?: DecisionPrevia[]
+}
+
+interface DecisionPrevia {
+  id:                number
+  asin:              string
+  mercado:           string
+  veredicto_sistema: string
+  score_oportunidad: number
+  roi_estimado_pct:  number | null
+  decision_usuario:  string
+  resultado_real:    string
+  roi_real_pct:      number | null
+  fecha_decision:    string
+  lecciones:         string
 }
 
 interface Step {
@@ -547,6 +563,16 @@ export default function AnalisisPage() {
             </>
           )}
 
+          {/* Decisiones previas similares */}
+          {result.decisiones_previas && result.decisiones_previas.length > 0 && (
+            <DecisionesPrevias decisiones={result.decisiones_previas} />
+          )}
+
+          {/* Registrar resultado */}
+          {result.decision_id && (
+            <RegistrarResultado decisionId={result.decision_id} apiUrl={API_URL ?? ""} />
+          )}
+
         </div>
       )}
 
@@ -604,6 +630,164 @@ function StepRow({ step }: { step: Step }) {
           <span className="text-xs text-zinc-600 ml-2">{step.message}</span>
         )}
       </div>
+    </div>
+  )
+}
+
+// ─── DecisionesPrevias ────────────────────────────────────────────────────────
+
+function DecisionesPrevias({ decisiones }: { decisiones: DecisionPrevia[] }) {
+  const [open, setOpen] = useState(false)
+
+  function colorResultado(r: string) {
+    if (r === "EXITOSO")   return "text-emerald-400"
+    if (r === "PERDIDA")   return "text-red-400"
+    if (r === "CANCELADO") return "text-zinc-500"
+    return "text-zinc-500"
+  }
+
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden">
+      <button type="button" onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-zinc-800/40 transition-colors">
+        <div className="flex items-center gap-2">
+          <History className="w-3.5 h-3.5 text-zinc-500" />
+          <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
+            Decisiones previas en este mercado ({decisiones.length})
+          </span>
+        </div>
+        {open ? <ChevronUp className="w-4 h-4 text-zinc-600" /> : <ChevronDown className="w-4 h-4 text-zinc-600" />}
+      </button>
+      {open && (
+        <div className="px-4 pb-4 flex flex-col gap-2 border-t border-zinc-800 pt-3">
+          {decisiones.map(d => (
+            <div key={d.id} className="bg-zinc-800/50 rounded-xl px-3 py-2.5">
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <span className="text-xs text-zinc-300 capitalize">{d.mercado}</span>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className={`text-xs font-semibold ${
+                    d.veredicto_sistema === "COMPRA"    ? "text-emerald-400" :
+                    d.veredicto_sistema === "NO COMPRA" ? "text-red-400" : "text-amber-400"
+                  }`}>{d.veredicto_sistema}</span>
+                  {d.resultado_real !== "PENDIENTE" && (
+                    <span className={`text-xs ${colorResultado(d.resultado_real)}`}>
+                      → {d.resultado_real}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="flex gap-4 text-xs text-zinc-600">
+                <span>Score {d.score_oportunidad}</span>
+                {d.roi_estimado_pct != null && <span>ROI est. {d.roi_estimado_pct.toFixed(1)}%</span>}
+                {d.roi_real_pct != null && <span className={colorResultado(d.resultado_real)}>ROI real {d.roi_real_pct.toFixed(1)}%</span>}
+                <span>{d.fecha_decision}</span>
+              </div>
+              {d.lecciones && (
+                <p className="text-xs text-zinc-500 mt-1.5 border-t border-zinc-700 pt-1.5 leading-relaxed">
+                  {d.lecciones}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── RegistrarResultado ───────────────────────────────────────────────────────
+
+function RegistrarResultado({ decisionId, apiUrl }: { decisionId: number; apiUrl: string }) {
+  const [open,      setOpen]      = useState(false)
+  const [resultado, setResultado] = useState("EXITOSO")
+  const [roiReal,   setRoiReal]   = useState("")
+  const [lecciones, setLecciones] = useState("")
+  const [loading,   setLoading]   = useState(false)
+  const [saved,     setSaved]     = useState(false)
+  const [error,     setError]     = useState("")
+
+  async function guardar() {
+    setError("")
+    setLoading(true)
+    try {
+      const body: Record<string, unknown> = {
+        resultado_real:   resultado,
+        decision_usuario: resultado === "EXITOSO" ? "ACEPTO" : "RECHAZO",
+        fecha_resultado:  new Date().toISOString().split("T")[0],
+      }
+      if (roiReal)   body.roi_real_pct = parseFloat(roiReal)
+      if (lecciones) body.lecciones    = lecciones
+
+      const res = await fetch(`${apiUrl}/decisiones/${decisionId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) throw new Error(`Error ${res.status}`)
+      setSaved(true)
+      setOpen(false)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Error al guardar")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  if (saved) {
+    return (
+      <div className="flex items-center gap-2 bg-emerald-950/30 border border-emerald-900/40 rounded-2xl px-4 py-3">
+        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+        <p className="text-xs text-emerald-300">Resultado registrado en memoria de decisiones.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden">
+      <button type="button" onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-zinc-800/40 transition-colors">
+        <div className="flex items-center gap-2">
+          <RefreshCw className="w-3.5 h-3.5 text-zinc-500" />
+          <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
+            Registrar resultado de esta decisión
+          </span>
+        </div>
+        {open ? <ChevronUp className="w-4 h-4 text-zinc-600" /> : <ChevronDown className="w-4 h-4 text-zinc-600" />}
+      </button>
+      {open && (
+        <div className="px-4 pb-4 border-t border-zinc-800 pt-3 flex flex-col gap-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-zinc-500 mb-1 block">Resultado</label>
+              <select value={resultado} onChange={e => setResultado(e.target.value)}
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:border-zinc-500">
+                <option value="EXITOSO">Exitoso</option>
+                <option value="PERDIDA">Pérdida</option>
+                <option value="CANCELADO">Cancelado</option>
+                <option value="PENDIENTE">Pendiente</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs text-zinc-500 mb-1 block">ROI real (%)</label>
+              <input type="number" step="0.1" value={roiReal} onChange={e => setRoiReal(e.target.value)}
+                placeholder="ej. 35.5"
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:border-zinc-500" />
+            </div>
+          </div>
+          <div>
+            <label className="text-xs text-zinc-500 mb-1 block">Lección aprendida (aparecerá en análisis futuros)</label>
+            <textarea value={lecciones} onChange={e => setLecciones(e.target.value)} rows={2}
+              placeholder="Ej: El precio bajó 2 semanas después de comprar..."
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:border-zinc-500 resize-none" />
+          </div>
+          {error && <p className="text-xs text-red-400">{error}</p>}
+          <button onClick={guardar} disabled={loading}
+            className="w-full flex items-center justify-center gap-2 py-2.5 bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 text-zinc-200 text-sm font-semibold rounded-xl transition-colors">
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+            Guardar resultado
+          </button>
+        </div>
+      )}
     </div>
   )
 }

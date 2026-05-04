@@ -28,6 +28,9 @@ from agents import (
 from agents.memoria import limpiar_memoria, leer_memoria
 from agents.validador import ejecutar as ejecutar_validador
 from agents.batch_arbitraje import ejecutar as ejecutar_batch
+from agents.memoria_decisiones import (
+    registrar_decision, obtener_contexto_previo, formatear_contexto_para_claude
+)
 import pandas as pd
 import io
 
@@ -55,6 +58,12 @@ class ValidarRequest(BaseModel):
     precio_amazon: float = 0
     ventas_mes: int = 0
     modo: str = "arbitraje"  # "arbitraje" | "marca_propia"
+
+
+def extraer_asin_de_url(url: str) -> str:
+    import re as _re
+    m = _re.search(r'/(?:dp|gp/product)/([A-Z0-9]{10})', url or "")
+    return m.group(1) if m else ""
 
 
 def detectar_mercado(producto: str) -> str:
@@ -108,6 +117,11 @@ def ejecutar_pipeline(job_id: str, producto: str, precio_compra: float, unidades
         prog(0, "Detector de nicho", "Identificando nicho de mercado...", "running")
         mercado = detectar_mercado(producto)
         prog(0, "Detector de nicho", f"Nicho: {mercado}", "done")
+
+        # Consultar decisiones previas antes de arrancar el pipeline
+        asin_param = extraer_asin_de_url(url_amazon)
+        decisiones_previas = obtener_contexto_previo(mercado, asin=asin_param)
+        jobs[job_id]["decisiones_previas"] = decisiones_previas
 
         limpiar_memoria()
 
@@ -207,6 +221,21 @@ def ejecutar_pipeline(job_id: str, producto: str, precio_compra: float, unidades
                 "puede_vender_sin_marca":     restricciones_mem.get("puede_vender_sin_marca_registrada", True),
             },
         }
+
+        # Auto-registrar decisión en memoria histórica
+        veredicto_str = final.get("veredicto", "")
+        score_val     = int(final.get("score_oportunidad", 0) or 0)
+        roi_val       = float(final.get("roi_estimado_pct", 0) or 0)
+        decision_id   = registrar_decision(
+            mercado          = mercado,
+            veredicto_sistema= veredicto_str,
+            score_oportunidad= score_val,
+            roi_estimado_pct = roi_val,
+            precio_compra_mx = precio_compra,
+            asin             = final.get("asin", ""),
+        )
+        final["decision_id"] = decision_id
+        final["decisiones_previas"] = jobs[job_id].get("decisiones_previas", [])
 
         jobs[job_id]["result"] = final
         jobs[job_id]["status"] = "done"
@@ -570,6 +599,76 @@ def _row_dict(r) -> dict:
         "notas":               r.notas or "",
         "created_at":          str(r.created_at),
     }
+
+
+# ─────────────────────────────────────────────
+# MEMORIA DE DECISIONES
+# ─────────────────────────────────────────────
+
+class DecisionUpdate(BaseModel):
+    decision_usuario: str | None = None   # ACEPTO | RECHAZO | PENDIENTE
+    resultado_real:   str | None = None   # EXITOSO | PERDIDA | PENDIENTE | CANCELADO
+    roi_real_pct:     float | None = None
+    fecha_resultado:  str  | None = None
+    lecciones:        str  | None = None
+    notas:            str  | None = None
+
+
+@app.get("/decisiones")
+async def listar_decisiones():
+    from sqlalchemy import text as sql_text
+    engine = _get_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(sql_text(
+            "SELECT id, asin, mercado, veredicto_sistema, score_oportunidad, "
+            "roi_estimado_pct, decision_usuario, resultado_real, roi_real_pct, "
+            "fecha_decision, fecha_resultado, lecciones, notas, created_at "
+            "FROM decisiones ORDER BY created_at DESC LIMIT 100"
+        )).fetchall()
+    return [
+        {
+            "id":               r[0],
+            "asin":             r[1] or "",
+            "mercado":          r[2],
+            "veredicto_sistema": r[3],
+            "score_oportunidad": r[4],
+            "roi_estimado_pct": float(r[5]) if r[5] is not None else None,
+            "decision_usuario": r[6],
+            "resultado_real":   r[7],
+            "roi_real_pct":     float(r[8]) if r[8] is not None else None,
+            "fecha_decision":   str(r[9]),
+            "fecha_resultado":  str(r[10]) if r[10] else None,
+            "lecciones":        r[11] or "",
+            "notas":            r[12] or "",
+            "created_at":       str(r[13]),
+        }
+        for r in rows
+    ]
+
+
+@app.put("/decisiones/{decision_id}")
+async def actualizar_decision(decision_id: int, upd: DecisionUpdate):
+    from sqlalchemy import text as sql_text
+    engine = _get_engine()
+    sets, params = [], {"id": decision_id}
+    mapping = {
+        "decision_usuario": upd.decision_usuario,
+        "resultado_real":   upd.resultado_real,
+        "roi_real_pct":     upd.roi_real_pct,
+        "fecha_resultado":  upd.fecha_resultado,
+        "lecciones":        upd.lecciones,
+        "notas":            upd.notas,
+    }
+    for col, val in mapping.items():
+        if val is not None:
+            sets.append(f"{col} = :{col}")
+            params[col] = val
+    if not sets:
+        raise HTTPException(400, "No hay campos para actualizar")
+    with engine.connect() as conn:
+        conn.execute(sql_text(f"UPDATE decisiones SET {', '.join(sets)} WHERE id = :id"), params)
+        conn.commit()
+    return {"ok": True}
 
 
 @app.get("/inversiones/resumen")
