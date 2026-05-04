@@ -222,6 +222,80 @@ def ejecutar_pipeline(job_id: str, producto: str, precio_compra: float, unidades
             },
         }
 
+        # ── Datos detallados para dashboard de marca propia ─────────────────
+        if modo == "marca_propia":
+            def _csv_lista(ruta, max_rows=10, cols=None):
+                p = Path(ruta)
+                if not p.exists():
+                    return []
+                try:
+                    df_tmp = pd.read_csv(p, encoding="utf-8")
+                    if cols:
+                        df_tmp = df_tmp[[c for c in cols if c in df_tmp.columns]]
+                    return df_tmp.head(max_rows).fillna(0).to_dict(orient="records")
+                except Exception:
+                    return []
+
+            competencia_mem = mem.get("competencia", {}).get("hallazgos", {})
+            resenas_mem     = mem.get("resenas",     {}).get("hallazgos", {})
+            gap_mem         = mem.get("gap_analysis",{}).get("hallazgos", {})
+
+            comp_cols  = ["asin", "marca", "precio", "bsr", "reviews_count",
+                          "rating", "ventas_mensuales_asin", "revenue_mensual_asin", "fba"]
+            kw_cols    = ["keyword", "volumen_busqueda", "competidores",
+                          "tendencia_30d", "score_oportunidad", "nivel_oportunidad"]
+            gap_cols   = ["area", "problema_cliente", "cobertura_mercado",
+                          "oportunidad", "impacto", "facilidad", "evidencia", "score"]
+            pp_cols    = ["tema", "frecuencia", "porcentaje", "prioridad"]
+
+            competidores_raw = _csv_lista("outputs/competidores_ranking.csv", 10, comp_cols)
+            # Revenue total para métricas
+            rev_total = sum(
+                float(r.get("revenue_mensual_asin") or 0) for r in competidores_raw
+            )
+            # Distribución de precios
+            precios = [float(r["precio"]) for r in competidores_raw if r.get("precio")]
+            precio_stats = {}
+            if precios:
+                precios_s = sorted(precios)
+                n = len(precios_s)
+                precio_stats = {
+                    "min":     precios_s[0],
+                    "p25":     precios_s[max(0, n//4 - 1)],
+                    "mediana": precios_s[n//2],
+                    "p75":     precios_s[min(n-1, (3*n)//4)],
+                    "max":     precios_s[-1],
+                }
+
+            # Score de mercado (misma lógica que dashboard.py)
+            intensidad = competencia_mem.get("intensidad_competencia", "alta")
+            score_mercado = 50 + {"baja": 20, "media": 5, "alta": -10}.get(intensidad.lower(), 0)
+            kw_raw = _csv_lista("outputs/keywords_opportunity.csv", 20, kw_cols)
+            gaps_raw = _csv_lista("outputs/gap_opportunities.csv", 10, gap_cols)
+            altas_kw = sum(1 for k in kw_raw if k.get("nivel_oportunidad") == "Alta oportunidad")
+            altos_gap = sum(1 for g in gaps_raw if g.get("impacto") == "Alto")
+            score_mercado += min(altas_kw * 2, 20) + min(altos_gap * 3, 15)
+            if rev_total > 1_000_000:
+                score_mercado += 15
+            elif rev_total > 500_000:
+                score_mercado += 10
+            elif rev_total > 100_000:
+                score_mercado += 5
+            score_mercado = max(0, min(100, round(score_mercado)))
+
+            final["score_mercado"]     = score_mercado
+            final["revenue_mercado"]   = round(rev_total, 2)
+            final["precio_stats"]      = precio_stats
+            final["competidores_top"]  = competidores_raw
+            final["keywords_top"]      = kw_raw
+            final["gaps_detalle"]      = gaps_raw
+            final["pain_points_top"]   = _csv_lista("outputs/pain_points_ranked.csv", 8, pp_cols)
+            final["barreras_entrada"]  = competencia_mem.get("barreras_entrada", [])
+            final["sentimiento"]       = resenas_mem.get("sentimiento_general", "")
+            final["insight_resenas"]   = resenas_mem.get("insight_principal", "")
+            final["gap_critico"]       = gap_mem.get("gap_mas_critico", "")
+            final["combinacion_ganadora"] = gap_mem.get("combinacion_ganadora", "")
+
         # Auto-registrar decisión en memoria histórica
         veredicto_str = final.get("veredicto", "")
         score_val     = int(final.get("score_oportunidad", 0) or 0)
@@ -488,6 +562,7 @@ def ejecutar_pipeline_batch(job_id: str, csv_texto: str,
                 "financiero":     p.get("financiero"),
                 "claude_analisis": p.get("claude_analisis", {}),
                 # Datos de mercado del CSV
+                "precio_amazon":    p.get("precio_amazon"),   # expuesto para recálculo en frontend
                 "bsr":            p.get("bsr"),
                 "reviews_count":  p.get("reviews_count"),
                 "rating":         p.get("rating"),
@@ -836,3 +911,59 @@ async def test_conectividad():
         resultados["database"] = {"status": "error", "tipo": type(e).__name__, "msg": str(e)[:200]}
 
     return resultados
+
+
+@app.get("/monitor/test")
+async def test_monitor():
+    """
+    Diagnóstico completo del monitor de precios.
+    Verifica env vars, inversiones activas, precios en BD y conectividad Telegram.
+    """
+    import urllib.request, urllib.parse
+    from sqlalchemy import create_engine as _ce, text as _t
+
+    resultado: dict = {}
+
+    # 1. Env vars de Telegram
+    tok  = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    chat = os.getenv("TELEGRAM_CHAT_ID", "")
+    resultado["telegram_token"] = "set" if tok else "MISSING"
+    resultado["telegram_chat"]  = "set" if chat else "MISSING"
+
+    # 2. Inversiones activas en BD
+    db_url = os.getenv("DATABASE_URL", "")
+    if db_url:
+        try:
+            engine = _ce(db_url)
+            with engine.connect() as conn:
+                inv_count = conn.execute(
+                    _t("SELECT COUNT(*) FROM inversiones WHERE estado='activo'")
+                ).scalar()
+                prod_count = conn.execute(
+                    _t("SELECT COUNT(DISTINCT asin) FROM productos")
+                ).scalar()
+            resultado["inversiones_activas"] = inv_count
+            resultado["asins_con_precio_bd"] = prod_count
+        except Exception as e:
+            resultado["bd_error"] = str(e)[:200]
+    else:
+        resultado["bd_error"] = "DATABASE_URL no configurada"
+
+    # 3. Test de Telegram (envía mensaje real si credenciales OK)
+    if tok and chat:
+        try:
+            url  = f"https://api.telegram.org/bot{tok}/sendMessage"
+            data = urllib.parse.urlencode({
+                "chat_id":    chat,
+                "text":       "✅ Test monitor de precios — conexión OK",
+                "parse_mode": "HTML",
+            }).encode()
+            req = urllib.request.Request(url, data=data, method="POST")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                resultado["telegram_test"] = "OK" if resp.status == 200 else f"HTTP {resp.status}"
+        except Exception as e:
+            resultado["telegram_test"] = f"ERROR: {str(e)[:150]}"
+    else:
+        resultado["telegram_test"] = "SKIP (faltan credenciales)"
+
+    return resultado

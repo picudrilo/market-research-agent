@@ -56,6 +56,7 @@ Responde ÚNICAMENTE con este JSON válido:
   "combinacion_ganadora": "2-3 atributos que ningún competidor combina hoy",
   "gaps": [
     {{"area": "nombre", "problema_cliente": "qué experimentan",
+      "cobertura_mercado": "qué hacen o no hacen los competidores",
       "oportunidad": "qué debería ofrecer un producto nuevo",
       "impacto": "Alto", "facilidad": "Media", "evidencia": "dato concreto"}}
   ],
@@ -186,10 +187,11 @@ def generar_reporte(mercado, gaps, resultado_ia):
 
     r.append("\n## Detalle de gaps\n")
     for i, gap in enumerate(gaps, 1):
-        r.append(f"### GAP {i}: {gap['area']}")
-        r.append(f"- **Problema:** {gap['problema_cliente']}")
-        r.append(f"- **Mercado actual:** {gap['cobertura_mercado']}")
-        r.append(f"- **Oportunidad:** {gap['oportunidad']}")
+        r.append(f"### GAP {i}: {gap.get('area', f'Gap {i}')}")
+        r.append(f"- **Problema:** {gap.get('problema_cliente', '')}")
+        cobertura = gap.get('cobertura_mercado') or gap.get('oportunidad', '')
+        r.append(f"- **Mercado actual:** {cobertura}")
+        r.append(f"- **Oportunidad:** {gap.get('oportunidad', '')}")
         if gap.get("evidencia"):
             r.append(f"- **Evidencia:** {gap['evidencia']}")
         r.append(f"- Impacto: `{gap.get('impacto','—')}` | Facilidad: `{gap.get('facilidad','—')}` | Score: **{gap['score']}**\n")

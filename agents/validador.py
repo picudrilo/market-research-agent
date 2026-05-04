@@ -125,6 +125,20 @@ score_oportunidad: entero de 0 a 100"""
     if "asin" not in resultado or not resultado["asin"]:
         resultado["asin"] = asin
 
+    # Guardrail financiero: veredicto no puede ser COMPRA si la ganancia por unidad es negativa.
+    # Claude puede dar COMPRA especulando con precios futuros, pero el vendedor necesita
+    # saber la realidad actual antes de comprometer capital.
+    ganancia_ud = resultado.get("ganancia_por_unidad_mx", 0) or 0
+    roi_actual  = resultado.get("roi_estimado_pct", 0) or 0
+    if ganancia_ud < 0 and resultado.get("veredicto") == "COMPRA":
+        resultado["veredicto"] = "RIESGO MEDIO"
+        # Score máximo 59 cuando hay pérdida real — refleja que es una apuesta, no una compra segura
+        resultado["score_oportunidad"] = min(resultado.get("score_oportunidad", 50), 59)
+        resultado["razon_principal"] = (
+            "Al precio actual la ganancia por unidad es negativa — solo viable si el precio sube. "
+            + resultado.get("razon_principal", "")
+        )
+
     resultado["_tokens"] = {
         "entrada": respuesta.usage.input_tokens,
         "salida":  respuesta.usage.output_tokens,

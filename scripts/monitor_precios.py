@@ -1,20 +1,19 @@
 # scripts/monitor_precios.py
 """
 Monitor de precios diario para arbitraje Amazon México.
-Detecta cambios de precio > 10% en ASINs del historial y envía
-alertas Telegram cuando el semáforo cambia de categoría.
+Detecta cambios de precio > 10% en ASINs activos del portafolio
+y envía alertas Telegram cuando el semáforo cambia de categoría.
 
-Configurar en Railway como servicio Cron independiente:
+Railway Cron (servicio separado):
   schedule: "0 9 * * *"
   command:  "python scripts/monitor_precios.py"
 
 Variables .env requeridas:
   DATABASE_URL        (ya existe)
-  TELEGRAM_BOT_TOKEN  (nuevo)
-  TELEGRAM_CHAT_ID    (nuevo)
+  TELEGRAM_BOT_TOKEN
+  TELEGRAM_CHAT_ID
 """
 import os
-import re
 import sys
 import urllib.request
 import urllib.parse
@@ -31,89 +30,63 @@ load_dotenv()
 from sqlalchemy import create_engine, text
 from agents.batch_arbitraje import calcular_financiero, asignar_semaforo
 
-HISTORIAL_DIR     = Path("historial")
 UMBRAL_CAMBIO_PCT = 10.0
 TELEGRAM_TOKEN    = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT     = os.getenv("TELEGRAM_CHAT_ID", "")
 
 
 # ─────────────────────────────────────────────
-# BLOQUE 1 — Lectura de historial
+# BLOQUE 1 — Fuente de ASINs: PostgreSQL
 # ─────────────────────────────────────────────
 
-def leer_asins_historial() -> list[str]:
+def leer_inversiones_activas(engine) -> list[dict]:
     """
-    Extrae ASINs únicos del index.md.
-    Busca el patrón `B0XXXXXXXXX` en las tablas markdown.
+    Lee inversiones activas desde PostgreSQL.
+    Estas son el origen de verdad — no depende del filesystem efímero.
     """
-    path = HISTORIAL_DIR / "index.md"
-    if not path.exists():
-        return []
-    texto = path.read_text(encoding="utf-8")
-    asins = re.findall(r"`([A-Z0-9]{10})`", texto)
-    return list(dict.fromkeys(asins))  # deduplicar, mantener orden
-
-
-def leer_ultimo_analisis(asin: str) -> dict | None:
-    """
-    Extrae precio_compra, precio_amazon, roi, score y semaforo
-    del análisis más reciente en historial/productos/{ASIN}.md.
-    """
-    path = HISTORIAL_DIR / "productos" / f"{asin}.md"
-    if not path.exists():
-        return None
-
-    texto = path.read_text(encoding="utf-8")
-    lineas = texto.split("\n")
-
-    # La primera fila de datos está inmediatamente después del separador |------|
-    sep_encontrado = False
-    for linea in lineas:
-        if "|----" in linea:
-            sep_encontrado = True
-            continue
-        if not sep_encontrado or "|" not in linea:
-            continue
-
-        # Formato: | YYYY-MM-DD | MX$NNN | MX$NNN | NN.N% | NN | SEMAFORO | ...
-        partes = [c.strip() for c in linea.split("|") if c.strip()]
-        if len(partes) < 6:
-            continue
-        try:
-            return {
-                "fecha":         partes[0],
-                "precio_compra": float(partes[1].replace("MX$", "").replace(",", "")),
-                "precio_amazon": float(partes[2].replace("MX$", "").replace(",", "")),
-                "roi":           float(partes[3].replace("%", "")),
-                "score":         int(partes[4]),
-                "semaforo":      partes[5],
-            }
-        except (ValueError, IndexError):
-            continue
-
-    return None
-
-
-def leer_titulo(asin: str) -> str:
-    """Lee la primera línea del archivo del ASIN como título."""
-    path = HISTORIAL_DIR / "productos" / f"{asin}.md"
-    if not path.exists():
-        return asin
     try:
-        primera = path.read_text(encoding="utf-8").split("\n")[0]
-        return primera.lstrip("# ").strip() or asin
-    except Exception:
-        return asin
+        sql = text("""
+            SELECT i.asin, i.titulo, i.precio_compra_mx,
+                   p.precio              AS precio_amazon_prev,
+                   p.bsr                 AS bsr_prev,
+                   p.reviews_count       AS reviews_prev,
+                   p.rating              AS rating_prev,
+                   p.ventas_mensuales_asin AS ventas_prev
+            FROM inversiones i
+            LEFT JOIN (
+                SELECT DISTINCT ON (asin)
+                    asin, precio, bsr, reviews_count, rating, ventas_mensuales_asin
+                FROM productos
+                ORDER BY asin, fecha_captura DESC
+            ) p ON p.asin = i.asin
+            WHERE i.estado = 'activo'
+              AND i.asin IS NOT NULL
+              AND i.asin != ''
+        """)
+        with engine.connect() as conn:
+            rows = conn.execute(sql).fetchall()
+        return [
+            {
+                "asin":              r[0],
+                "titulo":            r[1] or r[0],
+                "precio_compra":     float(r[2] or 0),
+                "precio_amazon_prev": float(r[3] or 0),
+                "bsr":               int(r[4] or 0),
+                "reviews_count":     int(r[5] or 0),
+                "rating":            float(r[6] or 0),
+                "ventas_mes":        int(r[7] or 0),
+            }
+            for r in rows
+            if r[2] and r[2] > 0   # debe tener precio de compra
+        ]
+    except Exception as e:
+        print(f"  [bd] Error leyendo inversiones: {type(e).__name__}: {e}")
+        return []
 
-
-# ─────────────────────────────────────────────
-# BLOQUE 2 — Consulta PostgreSQL
-# ─────────────────────────────────────────────
 
 def obtener_precio_actual(asin: str, engine) -> tuple[float | None, str | None]:
     """
-    Retorna (precio_actual, fecha_captura) del registro más reciente
-    en la tabla productos de PostgreSQL.
+    Precio más reciente en la tabla productos (capturado por el pipeline).
     """
     try:
         sql = text("""
@@ -134,13 +107,13 @@ def obtener_precio_actual(asin: str, engine) -> tuple[float | None, str | None]:
 
 
 # ─────────────────────────────────────────────
-# BLOQUE 3 — Telegram
+# BLOQUE 2 — Telegram
 # ─────────────────────────────────────────────
 
 def enviar_telegram(mensaje: str) -> bool:
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
-        print("  [telegram] Sin credenciales — alerta solo en consola:")
-        print(f"  {mensaje[:300]}")
+        print("  [telegram] TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID no configurados")
+        print(f"  [telegram] Mensaje (solo consola):\n  {mensaje[:300]}")
         return False
 
     url  = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -155,44 +128,65 @@ def enviar_telegram(mensaje: str) -> bool:
         with urllib.request.urlopen(req, timeout=10) as resp:
             ok = resp.status == 200
             if ok:
-                print("  [telegram] Mensaje enviado OK")
+                print("  [telegram] Enviado OK")
+            else:
+                print(f"  [telegram] HTTP {resp.status}")
             return ok
     except Exception as e:
         print(f"  [telegram] Error: {e}")
         return False
 
 
-def formatear_mensaje(asin: str, titulo: str, prev: dict, fin_nuevo: dict,
-                       semaforo_nuevo: str, precio_actual: float) -> str:
-    precio_prev  = prev["precio_amazon"]
-    roi_prev     = prev["roi"]
-    roi_nuevo    = fin_nuevo["roi"]
-    semaforo_prev = prev["semaforo"]
-    cambio_pct   = (precio_actual - precio_prev) / precio_prev * 100
+def enviar_resumen_diario(revisados: int, cambios: int, alertas: int, sin_precio: int):
+    """Mensaje de diagnóstico diario aunque no haya alertas."""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
+        return
+    msg = (
+        f"📊 <b>Monitor diario — {date.today().strftime('%d/%m/%Y')}</b>\n"
+        f"ASINs revisados: {revisados}\n"
+        f"Con cambio &gt;{UMBRAL_CAMBIO_PCT:.0f}%: {cambios}\n"
+        f"Alertas enviadas: {alertas}\n"
+        f"Sin precio en BD: {sin_precio}"
+    )
+    enviar_telegram(msg)
+
+
+def formatear_alerta(inv: dict, fin_nuevo: dict, semaforo_nuevo: str,
+                     precio_actual: float, precio_prev: float) -> str:
+    cambio_pct    = (precio_actual - precio_prev) / precio_prev * 100
+    roi_prev      = calcular_financiero({
+        "precio_amazon": precio_prev,
+        "precio_compra": inv["precio_compra"],
+        "fees": None,
+    })
+    roi_prev_val  = roi_prev["roi"] if roi_prev else 0
+
+    semaforo_prev = asignar_semaforo(roi_prev_val, inv.get("bsr", 50000))
 
     if semaforo_nuevo == "INVERTIR" and semaforo_prev != "INVERTIR":
         cabecera = "🟢 <b>NUEVA OPORTUNIDAD</b>"
     elif semaforo_nuevo == "DESCARTAR" and semaforo_prev != "DESCARTAR":
         cabecera = "🔴 <b>ALERTA DE RIESGO</b>"
     else:
-        cabecera = "🟡 <b>CAMBIO DE SEMÁFORO</b>"
+        cabecera = "🟡 <b>CAMBIO DE PRECIO</b>"
 
     signo = "↑" if cambio_pct > 0 else "↓"
 
     return (
         f"{cabecera}\n"
-        f"Producto: {titulo[:60]}\n"
-        f"ASIN: <code>{asin}</code>\n\n"
+        f"Producto: {inv['titulo'][:60]}\n"
+        f"ASIN: <code>{inv['asin']}</code>\n\n"
         f"Precio {signo}: MX${precio_prev:,.0f} → MX${precio_actual:,.0f} "
         f"({cambio_pct:+.1f}%)\n"
-        f"ROI: {roi_prev:.1f}% → {roi_nuevo:.1f}%\n"
-        f"Semáforo: {semaforo_prev} → {semaforo_nuevo}\n\n"
+        f"ROI: {roi_prev_val:.1f}% → {fin_nuevo['roi']:.1f}%\n"
+        f"Semáforo: {semaforo_prev} → {semaforo_nuevo}\n"
+        f"Compra original: MX${inv['precio_compra']:,.0f}\n\n"
         f"📅 {date.today().strftime('%d/%m/%Y')}"
     )
 
 
 # ─────────────────────────────────────────────
-# BLOQUE 4 — Ejecución principal
+# BLOQUE 3 — Ejecución principal
 # ─────────────────────────────────────────────
 
 def ejecutar():
@@ -200,6 +194,7 @@ def ejecutar():
     print("MONITOR DE PRECIOS DIARIO")
     print(f"{'='*50}")
     print(f"  Fecha: {date.today().isoformat()}")
+    print(f"  Telegram: {'configurado' if TELEGRAM_TOKEN and TELEGRAM_CHAT else 'SIN CONFIGURAR'}")
 
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
@@ -208,64 +203,73 @@ def ejecutar():
 
     engine = create_engine(db_url)
 
-    asins = leer_asins_historial()
-    if not asins:
-        print("  historial/index.md vacío o no existe — nada que monitorear")
+    inversiones = leer_inversiones_activas(engine)
+    if not inversiones:
+        print("  Sin inversiones activas en la BD — nada que monitorear")
+        print("  (Registra inversiones desde el dashboard para activar el monitor)")
+        enviar_telegram(
+            f"ℹ️ Monitor {date.today().strftime('%d/%m/%Y')}: "
+            "sin inversiones activas registradas en portafolio."
+        )
         return
-    print(f"  {len(asins)} ASINs en historial\n")
 
-    revisados      = 0
-    cambios        = 0
-    alertas        = 0
+    print(f"  {len(inversiones)} inversiones activas\n")
 
-    for asin in asins:
-        prev = leer_ultimo_analisis(asin)
-        if not prev:
-            print(f"  {asin}: sin historial parseado — omitiendo")
-            continue
+    revisados  = 0
+    cambios    = 0
+    alertas    = 0
+    sin_precio = 0
+
+    for inv in inversiones:
+        asin = inv["asin"]
+        precio_prev = inv["precio_amazon_prev"]
 
         precio_actual, fecha_bd = obtener_precio_actual(asin, engine)
         if not precio_actual:
-            print(f"  {asin}: sin precio en BD — omitiendo")
+            print(f"  {asin}: sin precio reciente en BD — omitiendo")
+            sin_precio += 1
+            continue
+
+        if not precio_prev or precio_prev == 0:
+            # Primera vez que vemos este ASIN — guardar como referencia
+            print(f"  {asin}: sin precio previo de referencia — omitiendo esta vez")
+            sin_precio += 1
             continue
 
         revisados += 1
-        precio_prev = prev["precio_amazon"]
-        cambio_pct  = abs((precio_actual - precio_prev) / precio_prev * 100)
+        cambio_pct = abs((precio_actual - precio_prev) / precio_prev * 100)
+
+        print(f"  {asin}: MX${precio_prev:.0f} → MX${precio_actual:.0f} "
+              f"({cambio_pct:+.1f}%)", end="")
 
         if cambio_pct < UMBRAL_CAMBIO_PCT:
-            print(f"  {asin}: cambio {cambio_pct:.1f}% < {UMBRAL_CAMBIO_PCT}% — sin alerta")
+            print(" — sin alerta")
             continue
 
-        # Recalcular financiero con precio nuevo pero mismo precio_compra
+        cambios += 1
+
         fin_nuevo = calcular_financiero({
             "precio_amazon": precio_actual,
-            "precio_compra": prev["precio_compra"],
+            "precio_compra": inv["precio_compra"],
             "fees": None,
         })
         if not fin_nuevo:
+            print(" — no se pudo calcular financiero")
             continue
 
-        # Usar el score histórico — no tenemos BSR/reviews actualizados
-        semaforo_nuevo = asignar_semaforo(fin_nuevo["roi"], prev["score"])
-        semaforo_prev  = prev["semaforo"]
-        cambios += 1
+        semaforo_nuevo = asignar_semaforo(fin_nuevo["roi"], inv.get("bsr") or 50000)
+        print(f" → ROI {fin_nuevo['roi']:.1f}% | {semaforo_nuevo}")
 
-        print(
-            f"  {asin}: precio {precio_prev:.0f}→{precio_actual:.0f} "
-            f"({cambio_pct:+.1f}%) | ROI {prev['roi']:.1f}%→{fin_nuevo['roi']:.1f}% "
-            f"| {semaforo_prev}→{semaforo_nuevo}"
-        )
+        mensaje = formatear_alerta(inv, fin_nuevo, semaforo_nuevo, precio_actual, precio_prev)
+        ok = enviar_telegram(mensaje)
+        if ok:
+            alertas += 1
 
-        # Solo alerta si cambió el semáforo de categoría
-        if semaforo_nuevo != semaforo_prev:
-            titulo  = leer_titulo(asin)
-            mensaje = formatear_mensaje(asin, titulo, prev, fin_nuevo, semaforo_nuevo, precio_actual)
-            ok = enviar_telegram(mensaje)
-            if ok:
-                alertas += 1
+    print(f"\n  Revisados: {revisados} | Cambio >10%: {cambios} | "
+          f"Alertas: {alertas} | Sin precio BD: {sin_precio}")
 
-    print(f"\n  Revisados: {revisados} | Con cambio >10%: {cambios} | Alertas enviadas: {alertas}")
+    # Resumen diario aunque no haya alertas
+    enviar_resumen_diario(revisados, cambios, alertas, sin_precio)
     print("  Monitor completado.")
 
 

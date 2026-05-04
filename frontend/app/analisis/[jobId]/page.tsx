@@ -4,9 +4,9 @@ import { useEffect, useRef, useState } from "react"
 import { useParams, useSearchParams, useRouter } from "next/navigation"
 import {
   CheckCircle2, XCircle, AlertTriangle, Loader2,
-  TrendingUp, TrendingDown, DollarSign, Package,
+  TrendingUp, TrendingDown, DollarSign,
   ArrowLeft, Tag, Zap, Shield, ExternalLink, BarChart2,
-  Sparkles, RefreshCw, History, ChevronDown, ChevronUp,
+  Sparkles, RefreshCw, History, ChevronDown, ChevronUp, Users, Star,
 } from "lucide-react"
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL
@@ -59,6 +59,58 @@ interface AnalysisResult {
     mensaje_central: string
   }
   keyword_principal: string
+  // Marca propia — datos detallados del pipeline
+  score_mercado?:       number
+  revenue_mercado?:     number
+  gap_critico?:         string
+  combinacion_ganadora?: string
+  barreras_entrada?:    string[]
+  sentimiento?:         string
+  insight_resenas?:     string
+  precio_stats?: {
+    min: number; p25: number; mediana: number; p75: number; max: number
+  }
+  competidores_top?: Array<{
+    asin:                  string
+    marca:                 string
+    precio:                number
+    bsr:                   number
+    reviews_count:         number
+    rating:                number
+    ventas_mensuales_asin: number
+    revenue_mensual_asin:  number
+    fba:                   boolean
+  }>
+  keywords_top?: Array<{
+    keyword:           string
+    volumen_busqueda:  number
+    competidores:      number
+    tendencia_30d:     number
+    score_oportunidad: number
+    nivel_oportunidad: string
+  }>
+  gaps_detalle?: Array<{
+    area:             string
+    problema_cliente: string
+    oportunidad:      string
+    impacto:          string
+    facilidad:        string
+    evidencia:        string
+    score:            number
+  }>
+  pain_points_top?: Array<{
+    tema:      string
+    frecuencia: number
+    porcentaje: number
+    prioridad:  string
+  }>
+  estacionalidad?: {
+    riesgo_actual:         string
+    advertencia:           string
+    pico_meses:            string[]
+    valle_meses:           string[]
+    tiene_estacionalidad:  boolean
+  }
   restricciones?: {
     nivel:                      string
     requiere_aprobacion_amazon: boolean
@@ -480,12 +532,231 @@ export default function AnalisisPage() {
                   <span className="text-xs text-zinc-500 uppercase tracking-wider">Mercado analizado</span>
                 </div>
                 <p className="text-xl font-bold text-zinc-100 capitalize">{result.mercado}</p>
-                {result.keyword_principal && (
+                {result.keyword_principal &&
+                 !result.keyword_principal.toUpperCase().startsWith("ADVERTENCIA") &&
+                 !result.keyword_principal.startsWith("[") && (
                   <div className="mt-2 inline-block bg-zinc-800 rounded-lg px-2.5 py-1 text-xs text-zinc-400">
                     Keyword principal: <span className="text-zinc-200 font-medium">{result.keyword_principal}</span>
                   </div>
                 )}
               </div>
+
+              {/* ── MÉTRICAS DE MERCADO ── */}
+              {(result.score_mercado != null || result.revenue_mercado != null) && (
+                <div className="grid grid-cols-2 gap-3">
+                  {result.score_mercado != null && (
+                    <div className={`border rounded-xl p-3.5 ${
+                      result.score_mercado >= 71 ? "bg-emerald-950/20 border-emerald-900/40" :
+                      result.score_mercado >= 41 ? "bg-amber-950/20 border-amber-900/40" :
+                      "bg-red-950/20 border-red-900/40"
+                    }`}>
+                      <div className={`text-2xl font-bold ${
+                        result.score_mercado >= 71 ? "text-emerald-400" :
+                        result.score_mercado >= 41 ? "text-amber-400" : "text-red-400"
+                      }`}>{result.score_mercado}/100</div>
+                      <div className="text-xs text-zinc-500 mt-0.5">Score de mercado</div>
+                    </div>
+                  )}
+                  {result.revenue_mercado != null && result.revenue_mercado > 0 && (
+                    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5">
+                      <div className="text-2xl font-bold text-zinc-100">
+                        {result.revenue_mercado >= 1_000_000
+                          ? `MX$${(result.revenue_mercado / 1_000_000).toFixed(1)}M`
+                          : `MX$${Math.round(result.revenue_mercado / 1000)}K`}
+                      </div>
+                      <div className="text-xs text-zinc-500 mt-0.5">Revenue mensual estimado</div>
+                    </div>
+                  )}
+                  {(result.competidores_top?.length ?? 0) > 0 && (
+                    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5">
+                      <div className="text-2xl font-bold text-zinc-100">{result.competidores_top!.length}</div>
+                      <div className="text-xs text-zinc-500 mt-0.5">Competidores analizados</div>
+                    </div>
+                  )}
+                  {(result.gaps_detalle?.length ?? 0) > 0 && (
+                    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3.5">
+                      <div className="text-2xl font-bold text-zinc-100">{result.gaps_detalle!.length}</div>
+                      <div className="text-xs text-zinc-500 mt-0.5">Oportunidades detectadas</div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ── COMPETENCIA ── */}
+              {result.competidores_top && result.competidores_top.length > 0 && (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
+                  <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">
+                    Análisis de competencia
+                  </h3>
+                  <div className="flex flex-col gap-2">
+                    {result.competidores_top.map((c, i) => {
+                      const rev = c.revenue_mensual_asin ?? 0
+                      const maxRev = Math.max(...result.competidores_top!.map(x => x.revenue_mensual_asin ?? 0), 1)
+                      const pct = Math.round((rev / maxRev) * 100)
+                      return (
+                        <div key={i} className="border border-zinc-800 rounded-xl p-3">
+                          <div className="flex items-start justify-between gap-2 mb-2">
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium text-zinc-200 truncate">
+                                {c.marca || c.asin || `Competidor ${i + 1}`}
+                              </p>
+                              {c.asin && <p className="text-xs text-zinc-600 font-mono">{c.asin}</p>}
+                            </div>
+                            <span className="text-sm font-semibold text-zinc-100 shrink-0">
+                              {c.precio > 0 ? `MX$${Math.round(c.precio).toLocaleString("es-MX")}` : "—"}
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500 mb-2">
+                            {c.bsr > 0 && <span>BSR {c.bsr.toLocaleString("es-MX")}</span>}
+                            {c.reviews_count > 0 && (
+                              <span className="flex items-center gap-1">
+                                <Users className="w-3 h-3" />{c.reviews_count.toLocaleString("es-MX")}
+                              </span>
+                            )}
+                            {c.rating > 0 && (
+                              <span className="flex items-center gap-1">
+                                <Star className="w-3 h-3" />{c.rating.toFixed(1)}
+                              </span>
+                            )}
+                            {c.ventas_mensuales_asin > 0 && (
+                              <span>{c.ventas_mensuales_asin.toLocaleString("es-MX")} uds/mes</span>
+                            )}
+                          </div>
+                          {rev > 0 && (
+                            <div className="flex items-center gap-2">
+                              <div className="flex-1 bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+                                <div className="h-full bg-violet-500 rounded-full"
+                                  style={{ width: `${pct}%` }} />
+                              </div>
+                              <span className="text-xs text-zinc-500 shrink-0">
+                                {rev >= 1_000_000 ? `MX$${(rev/1_000_000).toFixed(1)}M` : `MX$${Math.round(rev/1000)}K`}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+
+                  {/* Distribución de precios */}
+                  {result.precio_stats && (
+                    <div className="mt-3 pt-3 border-t border-zinc-800">
+                      <p className="text-xs text-zinc-600 mb-2">Distribución de precios</p>
+                      <div className="flex gap-2">
+                        {([
+                          ["Mín", result.precio_stats.min],
+                          ["P25", result.precio_stats.p25],
+                          ["Med", result.precio_stats.mediana],
+                          ["P75", result.precio_stats.p75],
+                          ["Máx", result.precio_stats.max],
+                        ] as [string, number][]).map(([lbl, val]) => (
+                          <div key={lbl} className="flex-1 text-center">
+                            <div className="text-xs text-zinc-500">{lbl}</div>
+                            <div className="text-xs font-semibold text-zinc-300">
+                              ${Math.round(val).toLocaleString("es-MX")}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Barreras de entrada */}
+                  {result.barreras_entrada && result.barreras_entrada.length > 0 && (
+                    <div className="mt-3 pt-3 border-t border-zinc-800">
+                      <p className="text-xs text-zinc-600 mb-1.5">Barreras de entrada</p>
+                      <ul className="flex flex-col gap-1">
+                        {result.barreras_entrada.slice(0, 4).map((b, i) => (
+                          <li key={i} className="text-xs text-zinc-500 flex gap-2">
+                            <span className="shrink-0 text-amber-600">·</span>{b}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ── GAP ANALYSIS ── */}
+              {result.gaps_detalle && result.gaps_detalle.length > 0 && (
+                <div>
+                  <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">
+                    Oportunidades de mercado
+                  </h3>
+                  {result.gap_critico && (
+                    <div className="bg-emerald-950/20 border border-emerald-900/40 rounded-xl px-3 py-2.5 mb-3">
+                      <p className="text-xs text-emerald-400 font-semibold mb-0.5">Gap más crítico</p>
+                      <p className="text-xs text-zinc-300 leading-relaxed">{result.gap_critico}</p>
+                      {result.combinacion_ganadora && (
+                        <p className="text-xs text-zinc-500 mt-1.5 italic">{result.combinacion_ganadora}</p>
+                      )}
+                    </div>
+                  )}
+                  <div className="flex flex-col gap-2">
+                    {result.gaps_detalle.map((g, i) => (
+                      <div key={i} className={`border-l-2 rounded-r-xl pl-3 pr-3 py-2.5 bg-zinc-900/60 ${
+                        g.impacto === "Alto"  ? "border-emerald-600" :
+                        g.impacto === "Medio" ? "border-amber-600" : "border-zinc-700"
+                      }`}>
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <p className="text-sm font-medium text-zinc-200">{g.area}</p>
+                          <div className="flex gap-1.5 shrink-0">
+                            <span className={`text-xs px-1.5 py-0.5 rounded ${
+                              g.impacto === "Alto"  ? "bg-emerald-950 text-emerald-400" :
+                              g.impacto === "Medio" ? "bg-amber-950 text-amber-400" :
+                              "bg-zinc-800 text-zinc-500"
+                            }`}>{g.impacto}</span>
+                          </div>
+                        </div>
+                        <p className="text-xs text-zinc-400 leading-relaxed">{g.oportunidad}</p>
+                        {g.evidencia && typeof g.evidencia === "string" && g.evidencia !== "0" && (
+                          <p className="text-xs text-zinc-600 mt-1">{g.evidencia.slice(0, 120)}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ── PAIN POINTS / RESEÑAS ── */}
+              {((result.pain_points_top && result.pain_points_top.length > 0) || result.insight_resenas) && (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
+                  <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">
+                    Voz del cliente
+                  </h3>
+                  {result.sentimiento && (
+                    <p className="text-xs text-zinc-400 mb-3 italic">Sentimiento: {result.sentimiento}</p>
+                  )}
+                  {result.pain_points_top && result.pain_points_top.length > 0 && (
+                    <div className="flex flex-col gap-2 mb-3">
+                      {result.pain_points_top.map((pp, i) => {
+                        const pct = Math.min(100, pp.porcentaje > 1 ? pp.porcentaje : pp.porcentaje * 100)
+                        const color = pp.prioridad === "Alta" ? "bg-red-500" :
+                                      pp.prioridad === "Media" ? "bg-amber-500" : "bg-emerald-500"
+                        return (
+                          <div key={i}>
+                            <div className="flex items-center justify-between text-xs mb-1">
+                              <span className="text-zinc-300 capitalize">
+                                {String(pp.tema).replace(/_/g, " ")}
+                              </span>
+                              <span className="text-zinc-600">{pct.toFixed(0)}%</span>
+                            </div>
+                            <div className="bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+                              <div className={`h-full rounded-full ${color}`}
+                                style={{ width: `${pct}%` }} />
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                  {result.insight_resenas && (
+                    <p className="text-xs text-zinc-400 border-t border-zinc-800 pt-3 leading-relaxed">
+                      {result.insight_resenas}
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* Brand concept */}
               {result.concepto?.nombre && (
@@ -558,6 +829,79 @@ export default function AnalisisPage() {
                   <p className="text-xs text-zinc-500 leading-relaxed font-mono">
                     {result.listing.terminos_backend.join(", ")}
                   </p>
+                </div>
+              )}
+
+              {/* Restricciones regulatorias — marca propia */}
+              {result.restricciones?.nivel && result.restricciones.nivel !== "BAJO" && (
+                <div className={`border rounded-2xl p-4 ${
+                  result.restricciones.nivel === "ALTO"
+                    ? "bg-red-950/30 border-red-900/50"
+                    : "bg-amber-950/20 border-amber-900/40"
+                }`}>
+                  <div className="flex items-center gap-2 mb-2">
+                    <Shield className={`w-3.5 h-3.5 ${result.restricciones.nivel === "ALTO" ? "text-red-400" : "text-amber-400"}`} />
+                    <h3 className={`text-xs font-semibold uppercase tracking-wider ${result.restricciones.nivel === "ALTO" ? "text-red-400" : "text-amber-400"}`}>
+                      Restricciones — Nivel {result.restricciones.nivel}
+                    </h3>
+                  </div>
+                  {result.restricciones.advertencia && (
+                    <p className="text-xs text-zinc-300 leading-relaxed mb-2">
+                      {result.restricciones.advertencia}
+                    </p>
+                  )}
+                  {result.restricciones.cofepris_aplica && (
+                    <p className="text-xs text-amber-400 mb-1">· Requiere registro COFEPRIS</p>
+                  )}
+                  {result.restricciones.requiere_aprobacion_amazon && (
+                    <p className="text-xs text-red-400 mb-1">· Requiere aprobación previa de Amazon</p>
+                  )}
+                  {result.restricciones.certificaciones_requeridas?.length > 0 && (
+                    <ul className="flex flex-col gap-1 mt-1">
+                      {result.restricciones.certificaciones_requeridas.map((c, i) => (
+                        <li key={i} className="text-xs text-zinc-500 flex gap-2">
+                          <span className="shrink-0">·</span>{c}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+
+              {/* Estacionalidad — marca propia */}
+              {result.estacionalidad?.tiene_estacionalidad && (
+                <div className={`border rounded-2xl p-4 ${
+                  result.estacionalidad.riesgo_actual === "ALTO"
+                    ? "bg-red-950/20 border-red-900/40"
+                    : result.estacionalidad.riesgo_actual === "MEDIO"
+                    ? "bg-amber-950/20 border-amber-900/40"
+                    : "bg-zinc-900 border-zinc-800"
+                }`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
+                      Estacionalidad
+                    </h3>
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-md ${
+                      result.estacionalidad.riesgo_actual === "ALTO"   ? "text-red-400 bg-red-950/40" :
+                      result.estacionalidad.riesgo_actual === "MEDIO"  ? "text-amber-400 bg-amber-950/40" :
+                      "text-emerald-400 bg-emerald-950/40"
+                    }`}>
+                      {result.estacionalidad.riesgo_actual}
+                    </span>
+                  </div>
+                  {result.estacionalidad.advertencia && (
+                    <p className="text-xs text-zinc-400 leading-relaxed mb-2">
+                      {result.estacionalidad.advertencia}
+                    </p>
+                  )}
+                  <div className="flex gap-4 text-xs text-zinc-500">
+                    {result.estacionalidad.pico_meses?.length > 0 && (
+                      <span>Pico: {result.estacionalidad.pico_meses.join(", ")}</span>
+                    )}
+                    {result.estacionalidad.valle_meses?.length > 0 && (
+                      <span>Valle: {result.estacionalidad.valle_meses.join(", ")}</span>
+                    )}
+                  </div>
                 </div>
               )}
             </>

@@ -169,19 +169,34 @@ def analizar_con_claude(mercado, df_oportunidad, clusters):
         df_oportunidad["nivel_oportunidad"] == "Alta oportunidad"
     ].head(8).to_dict(orient="records")
 
-    prompt = f"""Eres un experto en SEO para Amazon México especializado en {mercado}.
+    sin_datos = df_oportunidad.empty
 
-{contexto_previo}
-Analiza la estrategia de keywords para entrar al mercado de **{mercado}** en Amazon MX.
-
-=== TOP 15 KEYWORDS POR SCORE ===
+    if sin_datos:
+        seccion_datos = (
+            "No hay keywords en la base de datos para este mercado.\n"
+            "Infiere keywords desde tu conocimiento de Amazon México y el contexto acumulado.\n"
+            "Genera keywords reales y específicas que un comprador mexicano usaría en Amazon MX."
+        )
+    else:
+        seccion_datos = f"""=== TOP 15 KEYWORDS POR SCORE ===
 {json.dumps(top_kw, ensure_ascii=False, indent=2)}
 
 === KEYWORDS DE ALTA OPORTUNIDAD ===
 {json.dumps(alta_oportunidad, ensure_ascii=False, indent=2)}
 
 === CLUSTERS SEMÁNTICOS ===
-{json.dumps({k: v for k, v in clusters.items()}, ensure_ascii=False, indent=2)}
+{json.dumps({k: v for k, v in clusters.items()}, ensure_ascii=False, indent=2)}"""
+
+    prompt = f"""Eres un experto en SEO para Amazon México especializado en {mercado}.
+
+{contexto_previo}
+Analiza la estrategia de keywords para entrar al mercado de **{mercado}** en Amazon MX.
+
+{seccion_datos}
+
+INSTRUCCIÓN CRÍTICA: El campo "keyword_principal" debe ser SIEMPRE una keyword real de búsqueda
+(ej: "sal artesanal mexicana", "sal marina gourmet", "sal de colima sin aditivos").
+NUNCA pongas advertencias, notas, comentarios ni texto entre corchetes en ese campo.
 
 Responde ÚNICAMENTE con JSON válido, sin backticks:
 
@@ -239,6 +254,24 @@ Genera exactamente 5 bullets."""
         "entrada": respuesta.usage.input_tokens,
         "salida":  respuesta.usage.output_tokens,
     }
+
+    # Guardrail: si keyword_principal parece una advertencia o está vacía, usar fallback
+    kw_tit = analisis.get("estrategia_titulo", {})
+    kw_principal = kw_tit.get("keyword_principal", "")
+    kw_invalida = (
+        not kw_principal
+        or kw_principal.upper().startswith("ADVERTENCIA")
+        or kw_principal.startswith("[")
+        or len(kw_principal) > 80
+    )
+    if kw_invalida:
+        # Intentar rescatar de keywords_backend o usar el nombre del mercado
+        backend_kws = analisis.get("keywords_backend_recomendadas", [])
+        fallback = backend_kws[0] if backend_kws else mercado
+        print(f"  [keywords] keyword_principal inválida — usando fallback: {fallback!r}")
+        if "estrategia_titulo" not in analisis:
+            analisis["estrategia_titulo"] = {}
+        analisis["estrategia_titulo"]["keyword_principal"] = fallback
 
     escribir_memoria("keywords", {
         "keyword_principal":    analisis.get("estrategia_titulo", {}).get("keyword_principal", ""),

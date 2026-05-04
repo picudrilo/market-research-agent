@@ -41,6 +41,7 @@ interface Producto {
   en_historial_bd:  boolean
   financiero:       Financiero | null
   claude_analisis:  ClaudeAnalisis
+  precio_amazon:    number | null
   bsr:              number | null
   reviews_count:    number | null
   rating:           number | null
@@ -143,6 +144,37 @@ export default function BatchResultPage() {
   const [sortKey,         setSortKey]         = useState<"score_arbitraje" | "roi" | "bsr">("score_arbitraje")
   const [selectedProduct, setSelectedProduct] = useState<Producto | null>(null)
   const [showModal,       setShowModal]       = useState(false)
+
+  function handleUpdatePrecio(asin: string, nuevoPrecio: number) {
+    if (!result) return
+    const precioAmazon = result.productos.find(p => p.asin === asin)?.precio_amazon ?? 0
+    if (!precioAmazon) return
+    const referralFee  = Math.round(precioAmazon * 0.15 * 100) / 100
+    const fbaFee       = 75
+    const gananciaNeta = Math.round((precioAmazon - referralFee - fbaFee - nuevoPrecio) * 100) / 100
+    const roi          = Math.round((gananciaNeta / nuevoPrecio) * 1000) / 10
+    const nuevoFin: Financiero = {
+      precio_compra: nuevoPrecio,
+      precio_amazon: precioAmazon,
+      referral_fee:  referralFee,
+      fba_fee:       fbaFee,
+      ganancia_neta: gananciaNeta,
+      roi,
+    }
+    const nuevoSemaforo: Semaforo =
+      roi >= 30 ? "INVERTIR" : roi >= 15 ? "RIESGO MEDIO" : "DESCARTAR"
+
+    setResult(prev => {
+      if (!prev) return prev
+      const productos = prev.productos.map(p =>
+        p.asin === asin ? { ...p, financiero: nuevoFin, semaforo: nuevoSemaforo } : p
+      )
+      return { ...prev, productos }
+    })
+    setSelectedProduct(prev =>
+      prev?.asin === asin ? { ...prev, financiero: nuevoFin, semaforo: nuevoSemaforo } : prev
+    )
+  }
 
   const nombreSesion = searchParams.get("sesion") ?? ""
   const totalParam   = searchParams.get("total") ?? ""
@@ -489,6 +521,7 @@ export default function BatchResultPage() {
           producto={selectedProduct}
           onClose={() => setSelectedProduct(null)}
           onRegistrar={() => setShowModal(true)}
+          onUpdatePrecio={handleUpdatePrecio}
         />
       )}
 
@@ -604,6 +637,7 @@ function ProductCard({
     : roi >= 30  ? "text-emerald-400"
     : roi >= 15  ? "text-amber-400"
     : "text-red-400"
+  const precioCompra = p.financiero?.precio_compra ?? null
 
   return (
     <button type="button" onClick={onSelect}
@@ -615,6 +649,9 @@ function ProductCard({
         </p>
         <div className="flex items-center gap-3 mt-0.5">
           <span className="text-xs text-zinc-600 font-mono">{p.asin}</span>
+          {precioCompra != null && (
+            <span className="text-xs text-zinc-500">MX${fmt(precioCompra, 2)}</span>
+          )}
           {p.en_historial_bd && (
             <span className="text-xs text-blue-500">historial</span>
           )}
@@ -681,12 +718,17 @@ function Chip({ icon, label }: { icon: React.ReactNode; label: string }) {
 // ─── DetailPanel (bottom sheet) ───────────────────────────────────────────────
 
 function DetailPanel({
-  producto: p, onClose, onRegistrar,
+  producto: p, onClose, onRegistrar, onUpdatePrecio,
 }: {
   producto: Producto
-  onClose:    () => void
-  onRegistrar: () => void
+  onClose:         () => void
+  onRegistrar:     () => void
+  onUpdatePrecio:  (asin: string, precio: number) => void
 }) {
+  const [inputPrecio, setInputPrecio] = useState(
+    p.financiero?.precio_compra != null ? String(p.financiero.precio_compra) : ""
+  )
+
   const roi = p.financiero?.roi ?? null
   const roiColor = roi == null ? "text-zinc-400"
     : roi >= 30 ? "text-emerald-400"
@@ -725,27 +767,55 @@ function DetailPanel({
         <div className="px-4 pb-6 flex flex-col gap-4">
 
           {/* Financiero */}
-          {p.financiero && (
-            <div>
-              <p className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">Financiero</p>
-              <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-                <FinRow label="Precio compra"  value={`MX$${fmt(p.financiero.precio_compra,  2)}`} />
-                <FinRow label="Precio Amazon"  value={`MX$${fmt(p.financiero.precio_amazon,  2)}`} />
-                <FinRow label="Referral fee"   value={`MX$${fmt(p.financiero.referral_fee,   2)}`} />
-                <FinRow label="FBA fee"        value={`MX$${fmt(p.financiero.fba_fee,        2)}`} />
-                <FinRow label="Ganancia neta"  value={`MX$${fmt(p.financiero.ganancia_neta,  2)}`}
-                  highlight={p.financiero.ganancia_neta > 0} />
-                <FinRow label="ROI"            value={`${fmt(p.financiero.roi, 1)}%`}
-                  highlight={p.financiero.roi >= 30} />
-              </div>
-              <div className="mt-2 text-center">
-                <span className={`text-2xl font-bold ${roiColor}`}>
-                  {roi != null ? `${fmt(roi, 1)}%` : "—"}
-                </span>
-                <span className="text-xs text-zinc-600 ml-1">ROI · Score {p.score_arbitraje}/100</span>
-              </div>
+          <div>
+            <p className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">Financiero</p>
+
+            {/* Precio compra — editable */}
+            <div className="flex items-center gap-2 mb-3">
+              <label className="text-xs text-zinc-500 shrink-0">Precio compra MX$</label>
+              <input
+                type="number"
+                min={0}
+                step={0.01}
+                value={inputPrecio}
+                onChange={e => {
+                  setInputPrecio(e.target.value)
+                  const val = parseFloat(e.target.value)
+                  if (!isNaN(val) && val > 0) onUpdatePrecio(p.asin, val)
+                }}
+                placeholder="0.00"
+                className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-2.5 py-1.5
+                           text-xs text-zinc-100 placeholder-zinc-600
+                           focus:outline-none focus:border-zinc-500"
+              />
             </div>
-          )}
+
+            {p.financiero && (
+              <>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+                  <FinRow label="Precio Amazon"  value={`MX$${fmt(p.financiero.precio_amazon,  2)}`} />
+                  <FinRow label="Referral fee"   value={`MX$${fmt(p.financiero.referral_fee,   2)}`} />
+                  <FinRow label="FBA fee"        value={`MX$${fmt(p.financiero.fba_fee,        2)}`} />
+                  <FinRow label="Ganancia neta"  value={`MX$${fmt(p.financiero.ganancia_neta,  2)}`}
+                    highlight={p.financiero.ganancia_neta > 0} />
+                  <FinRow label="ROI"            value={`${fmt(p.financiero.roi, 1)}%`}
+                    highlight={p.financiero.roi >= 30} />
+                </div>
+                <div className="mt-2 text-center">
+                  <span className={`text-2xl font-bold ${roiColor}`}>
+                    {roi != null ? `${fmt(roi, 1)}%` : "—"}
+                  </span>
+                  <span className="text-xs text-zinc-600 ml-1">ROI · Score {p.score_arbitraje}/100</span>
+                </div>
+              </>
+            )}
+
+            {!p.financiero && (p.precio_amazon ?? 0) > 0 && (
+              <p className="text-xs text-zinc-600 mt-1">
+                Precio Amazon: MX${fmt(p.precio_amazon, 2)} — ingresa el precio de compra para calcular ROI
+              </p>
+            )}
+          </div>
 
           {/* Métricas */}
           <div>
