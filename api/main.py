@@ -23,10 +23,12 @@ load_dotenv()
 from anthropic import Anthropic
 from agents import (
     ingesta, competencia, resenas, gap_analysis,
-    precio_valor, keywords, estacionalidad, restricciones, concepto, listado_optimizado
+    precio_valor, keywords, estacionalidad, restricciones, concepto, listado_optimizado,
+    scraper,
 )
-from agents.memoria import limpiar_memoria, leer_memoria
+from agents.memoria import limpiar_memoria, leer_memoria, escribir_memoria
 from agents.validador import ejecutar as ejecutar_validador
+from agents import conocimiento
 from agents.batch_arbitraje import ejecutar as ejecutar_batch
 from agents.memoria_decisiones import (
     registrar_decision, obtener_contexto_previo, formatear_contexto_para_claude
@@ -125,6 +127,41 @@ def ejecutar_pipeline(job_id: str, producto: str, precio_compra: float, unidades
 
         limpiar_memoria()
 
+        # Cargar historial institucional ANTES de que los agentes lean la memoria.
+        # Tolerante a fallos: si falla, el pipeline continúa sin contexto histórico.
+        try:
+            contexto_historico = conocimiento.obtener_contexto_historico(mercado)
+            if contexto_historico:
+                escribir_memoria("historial", {"contexto": contexto_historico})
+                emit({"type": "progress", "step": 0, "total": 11,
+                      "agent": "Memoria histórica",
+                      "message": "Contexto histórico cargado desde BD",
+                      "status": "done"})
+        except Exception:
+            pass  # Sin historial — primer análisis o BD no disponible
+
+        # Verificar frescura y scrapear si es necesario (antes de ingesta)
+        emit({"type": "progress", "step": 0, "total": 11,
+              "agent": "Verificación de datos",
+              "message": "Verificando datos disponibles para este mercado...",
+              "status": "running"})
+        try:
+            fuente = scraper.ejecutar(mercado)
+            fuente_txt = {
+                "csv":      "Datos frescos en BD",
+                "scraping": "Scraping completado",
+                "hibrido":  "Datos actualizados con scraping",
+            }.get(fuente, fuente)
+            emit({"type": "progress", "step": 0, "total": 11,
+                  "agent": "Verificación de datos",
+                  "message": fuente_txt,
+                  "status": "done"})
+        except Exception as e:
+            emit({"type": "progress", "step": 0, "total": 11,
+                  "agent": "Verificación de datos",
+                  "message": f"Scraper omitido: {str(e)[:60]}",
+                  "status": "error"})
+
         pasos = [
             (1, "Ingesta de datos",        lambda: ingesta.ejecutar(mercado)),
             (2, "Analisis de competencia", lambda: competencia.ejecutar(mercado)),
@@ -222,79 +259,94 @@ def ejecutar_pipeline(job_id: str, producto: str, precio_compra: float, unidades
             },
         }
 
-        # ── Datos detallados para dashboard de marca propia ─────────────────
+        # ── Métricas básicas de mercado (todos los modos) ────────────────────
+        def _csv_lista(ruta, max_rows=10, cols=None):
+            p = Path(ruta)
+            if not p.exists():
+                return []
+            try:
+                df_tmp = pd.read_csv(p, encoding="utf-8")
+                if cols:
+                    df_tmp = df_tmp[[c for c in cols if c in df_tmp.columns]]
+                return df_tmp.head(max_rows).fillna(0).to_dict(orient="records")
+            except Exception:
+                return []
+
+        comp_cols = ["asin", "marca", "precio", "bsr", "reviews_count",
+                     "rating", "ventas_mensuales_asin", "revenue_mensual_asin", "fba"]
+        competidores_raw_base = _csv_lista("outputs/competidores_ranking.csv", 10, comp_cols)
+        precios_base = [float(r["precio"]) for r in competidores_raw_base if r.get("precio")]
+        rev_total_base = sum(float(r.get("revenue_mensual_asin") or 0) for r in competidores_raw_base)
+        precio_stats_base: dict = {}
+        if precios_base:
+            ps = sorted(precios_base)
+            n = len(ps)
+            precio_stats_base = {
+                "min": ps[0], "p25": ps[max(0, n // 4 - 1)],
+                "mediana": ps[n // 2], "p75": ps[min(n - 1, (3 * n) // 4)], "max": ps[-1],
+            }
+
+        competencia_mem_base = mem.get("competencia", {}).get("hallazgos", {})
+        intensidad_base = competencia_mem_base.get("intensidad_competencia", "alta") or "alta"
+        score_mercado_base = 50 + {"baja": 20, "media": 5, "alta": -10}.get(intensidad_base.lower(), 0)
+        kw_base  = _csv_lista("outputs/keywords_opportunity.csv", 20, ["keyword", "nivel_oportunidad"])
+        gap_base = _csv_lista("outputs/gap_opportunities.csv",    10, ["impacto"])
+        score_mercado_base += min(sum(1 for k in kw_base  if k.get("nivel_oportunidad") == "Alta oportunidad") * 2, 20)
+        score_mercado_base += min(sum(1 for g in gap_base if g.get("impacto") == "Alto") * 3, 15)
+        if rev_total_base > 1_000_000:
+            score_mercado_base += 15
+        elif rev_total_base > 500_000:
+            score_mercado_base += 10
+        elif rev_total_base > 100_000:
+            score_mercado_base += 5
+        score_mercado_base = max(0, min(100, round(score_mercado_base)))
+
+        final["score_mercado"]   = score_mercado_base
+        final["revenue_mercado"] = round(rev_total_base, 2)
+        final["precio_stats"]    = precio_stats_base
+
+        # ── Datos detallados para dashboard de marca propia ───────────────────
         if modo == "marca_propia":
-            def _csv_lista(ruta, max_rows=10, cols=None):
-                p = Path(ruta)
-                if not p.exists():
-                    return []
-                try:
-                    df_tmp = pd.read_csv(p, encoding="utf-8")
-                    if cols:
-                        df_tmp = df_tmp[[c for c in cols if c in df_tmp.columns]]
-                    return df_tmp.head(max_rows).fillna(0).to_dict(orient="records")
-                except Exception:
-                    return []
+            kw_cols  = ["keyword", "volumen_busqueda", "competidores",
+                        "tendencia_30d", "score_oportunidad", "nivel_oportunidad"]
+            gap_cols = ["area", "problema_cliente", "cobertura_mercado",
+                        "oportunidad", "impacto", "facilidad", "evidencia", "score"]
+            pp_cols  = ["tema", "frecuencia", "porcentaje", "prioridad"]
 
             competencia_mem = mem.get("competencia", {}).get("hallazgos", {})
             resenas_mem     = mem.get("resenas",     {}).get("hallazgos", {})
             gap_mem         = mem.get("gap_analysis",{}).get("hallazgos", {})
 
-            comp_cols  = ["asin", "marca", "precio", "bsr", "reviews_count",
-                          "rating", "ventas_mensuales_asin", "revenue_mensual_asin", "fba"]
-            kw_cols    = ["keyword", "volumen_busqueda", "competidores",
-                          "tendencia_30d", "score_oportunidad", "nivel_oportunidad"]
-            gap_cols   = ["area", "problema_cliente", "cobertura_mercado",
-                          "oportunidad", "impacto", "facilidad", "evidencia", "score"]
-            pp_cols    = ["tema", "frecuencia", "porcentaje", "prioridad"]
+            kw_raw   = _csv_lista("outputs/keywords_opportunity.csv", 20, kw_cols)
+            gaps_raw = _csv_lista("outputs/gap_opportunities.csv",    10, gap_cols)
 
-            competidores_raw = _csv_lista("outputs/competidores_ranking.csv", 10, comp_cols)
-            # Revenue total para métricas
-            rev_total = sum(
-                float(r.get("revenue_mensual_asin") or 0) for r in competidores_raw
-            )
-            # Distribución de precios
-            precios = [float(r["precio"]) for r in competidores_raw if r.get("precio")]
-            precio_stats = {}
-            if precios:
-                precios_s = sorted(precios)
-                n = len(precios_s)
-                precio_stats = {
-                    "min":     precios_s[0],
-                    "p25":     precios_s[max(0, n//4 - 1)],
-                    "mediana": precios_s[n//2],
-                    "p75":     precios_s[min(n-1, (3*n)//4)],
-                    "max":     precios_s[-1],
-                }
-
-            # Score de mercado (misma lógica que dashboard.py)
-            intensidad = competencia_mem.get("intensidad_competencia", "alta")
-            score_mercado = 50 + {"baja": 20, "media": 5, "alta": -10}.get(intensidad.lower(), 0)
-            kw_raw = _csv_lista("outputs/keywords_opportunity.csv", 20, kw_cols)
-            gaps_raw = _csv_lista("outputs/gap_opportunities.csv", 10, gap_cols)
-            altas_kw = sum(1 for k in kw_raw if k.get("nivel_oportunidad") == "Alta oportunidad")
-            altos_gap = sum(1 for g in gaps_raw if g.get("impacto") == "Alto")
-            score_mercado += min(altas_kw * 2, 20) + min(altos_gap * 3, 15)
-            if rev_total > 1_000_000:
-                score_mercado += 15
-            elif rev_total > 500_000:
-                score_mercado += 10
-            elif rev_total > 100_000:
-                score_mercado += 5
-            score_mercado = max(0, min(100, round(score_mercado)))
-
-            final["score_mercado"]     = score_mercado
-            final["revenue_mercado"]   = round(rev_total, 2)
-            final["precio_stats"]      = precio_stats
-            final["competidores_top"]  = competidores_raw
-            final["keywords_top"]      = kw_raw
-            final["gaps_detalle"]      = gaps_raw
-            final["pain_points_top"]   = _csv_lista("outputs/pain_points_ranked.csv", 8, pp_cols)
-            final["barreras_entrada"]  = competencia_mem.get("barreras_entrada", [])
-            final["sentimiento"]       = resenas_mem.get("sentimiento_general", "")
-            final["insight_resenas"]   = resenas_mem.get("insight_principal", "")
-            final["gap_critico"]       = gap_mem.get("gap_mas_critico", "")
+            final["competidores_top"]     = competidores_raw_base
+            final["keywords_top"]         = kw_raw
+            final["gaps_detalle"]         = gaps_raw
+            final["pain_points_top"]      = _csv_lista("outputs/pain_points_ranked.csv", 8, pp_cols)
+            final["barreras_entrada"]     = competencia_mem.get("barreras_entrada", [])
+            final["sentimiento"]          = resenas_mem.get("sentimiento_general", "")
+            final["insight_resenas"]      = resenas_mem.get("insight_principal", "")
+            final["gap_critico"]          = gap_mem.get("gap_mas_critico", "")
             final["combinacion_ganadora"] = gap_mem.get("combinacion_ganadora", "")
+
+        # Persistir análisis en BD para alimentar futuros runs.
+        # Se pasa metricas_extra con los campos calculados en este scope.
+        try:
+            metricas_extra_api = {
+                "score_mercado":          final.get("score_mercado"),
+                "revenue_mercado":        final.get("revenue_mercado"),
+                "precio_stats":           final.get("precio_stats"),
+                "pain_points_top":        final.get("pain_points_top"),
+                "gaps_detalle":           final.get("gaps_detalle"),
+                "keywords_top":           final.get("keywords_top"),
+                "intensidad_competencia": mem.get("competencia", {}).get(
+                                              "hallazgos", {}).get("intensidad_competencia"),
+                "veredicto":              final.get("veredicto"),
+            }
+            conocimiento.guardar_analisis(mercado, modo, mem, metricas_extra_api)
+        except Exception:
+            pass  # No interrumpir el flujo si el guardado falla
 
         # Auto-registrar decisión en memoria histórica
         veredicto_str = final.get("veredicto", "")
@@ -594,6 +646,12 @@ def ejecutar_pipeline_batch(job_id: str, csv_texto: str,
             "productos":       [serializar(p) for p in resultado],
             "batch_meta":      batch_meta,
         }
+
+        # Persistir en memoria institucional para que futuros análisis aprendan de este batch
+        try:
+            conocimiento.guardar_batch_por_categorias(resultado)
+        except Exception:
+            pass
 
         jobs[job_id]["result"] = final
         jobs[job_id]["status"] = "done"

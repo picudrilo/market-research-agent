@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 RAW_DIR     = Path("data/raw")
+AUTO_DIR    = Path("data/raw/auto")
 REPORTS_DIR = Path("reports")
 
 # Columnas clave para identificar el tipo de CSV por su contenido.
@@ -292,9 +293,18 @@ def ejecutar(mercado="suplementos"):
 
     REPORTS_DIR.mkdir(exist_ok=True)
 
-    archivos_csv = sorted(RAW_DIR.glob("*.csv"))
+    # Priorizar archivos auto-generados para este mercado específico.
+    # Esto evita que CSVs de Helium 10 de otros mercados contaminen el análisis.
+    slug = re.sub(r"[^\w]", "_", mercado.lower().strip())
+    auto_archivos = sorted(AUTO_DIR.glob(f"{slug}_*.csv")) if AUTO_DIR.exists() else []
+    if auto_archivos:
+        archivos_csv = auto_archivos
+        print(f"\n  Usando {len(archivos_csv)} archivo(s) auto-generados para '{mercado}'")
+    else:
+        archivos_csv = sorted(RAW_DIR.glob("*.csv"))
+
     if not archivos_csv:
-        print("\n  Sin archivos CSV en data/raw/")
+        print("\n  Sin archivos CSV en data/raw/ ni data/raw/auto/")
         return None
 
     print(f"\n  Archivos CSV detectados: {len(archivos_csv)}")

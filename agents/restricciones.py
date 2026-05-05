@@ -40,7 +40,7 @@ def analizar_restricciones_haiku(mercado: str) -> dict:
     try:
         resp = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=500,
+            max_tokens=1500,
             system=PROMPT_SISTEMA,
             messages=[{"role": "user", "content": PROMPT_USUARIO.format(mercado=mercado)}],
         )

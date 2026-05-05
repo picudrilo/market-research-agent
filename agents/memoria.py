@@ -63,8 +63,9 @@ def obtener_contexto_para_claude() -> str:
     secciones.append("=== CONTEXTO ACUMULADO DE AGENTES ANTERIORES ===")
     secciones.append("Usa este contexto para mantener coherencia con decisiones previas.\n")
 
-    # Orden lógico del pipeline para presentar el contexto en secuencia
-    orden = ["resenas", "gap_analysis", "keywords", "concepto", "listado_optimizado"]
+    # Orden lógico del pipeline para presentar el contexto en secuencia.
+    # "historial" va primero para que el contexto histórico preceda a todo lo demás.
+    orden = ["historial", "resenas", "gap_analysis", "keywords", "concepto", "listado_optimizado"]
     agentes_ordenados = [a for a in orden if a in memoria] + \
                         [a for a in memoria if a not in orden]
 
@@ -91,13 +92,25 @@ def obtener_contexto_para_claude() -> str:
 
 def limpiar_memoria():
     """
-    Borra la memoria del pipeline anterior.
-    El orchestrator llama esto al inicio de cada ejecución nueva
-    para que no se mezclen datos de runs anteriores.
+    Borra la memoria y los CSVs de outputs/ del pipeline anterior.
+    Evita que GAP analysis y concepto lean datos de un mercado distinto.
     """
     if MEMORIA_PATH.exists():
         MEMORIA_PATH.unlink()
-        print("  OK Memoria del pipeline anterior limpiada")
+
+    outputs = Path("outputs")
+    if outputs.exists():
+        eliminados = 0
+        for f in outputs.glob("*.csv"):
+            try:
+                f.unlink()
+                eliminados += 1
+            except Exception:
+                pass
+        if eliminados:
+            print(f"  OK Outputs anteriores limpiados ({eliminados} CSVs eliminados)")
+
+    print("  OK Memoria del pipeline anterior limpiada")
 
 
 def parsear_json_claude(texto: str, agente: str = "") -> dict:

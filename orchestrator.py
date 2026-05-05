@@ -9,7 +9,9 @@ sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
 
 from agents import ingesta, competencia, resenas, gap_analysis, precio_valor, keywords, estacionalidad, restricciones, concepto, listado_optimizado, dashboard
-from agents.memoria import limpiar_memoria, leer_memoria
+from agents import scraper
+from agents.memoria import limpiar_memoria, leer_memoria, escribir_memoria
+from agents import conocimiento
 
 def imprimir_header(mercado):
     print("\n" + "="*55)
@@ -65,15 +67,28 @@ def imprimir_resumen_final(resultados, tiempo_total):
     print("  Dashboard: reports/dashboard.html")
     print("  Listing:   reports/fase5_listado_optimizado.md\n")
 
-def ejecutar_pipeline(mercado):
+def ejecutar_pipeline(mercado, modo: str = "marca_propia"):
     print("\n  Preparando pipeline...")
     limpiar_memoria()
+
+    # Cargar historial ANTES de que los agentes empiecen a leer memoria.
+    # Si falla, el pipeline continúa sin contexto histórico.
+    try:
+        contexto_historico = conocimiento.obtener_contexto_historico(mercado)
+        if contexto_historico:
+            escribir_memoria("historial", {"contexto": contexto_historico})
+            print("  OK Contexto histórico cargado desde BD")
+        else:
+            print("  -- Sin historial previo para este mercado")
+    except Exception as _e_hist:
+        print(f"  -- Historial no disponible ({_e_hist})")
 
     imprimir_header(mercado)
     inicio_total = time.time()
     resultados   = {}
 
     agentes = [
+        ("Agente 0 - Verificación de Datos",     lambda: scraper.ejecutar(mercado)),
         ("Agente 1 - Ingesta de Datos",          lambda: ingesta.ejecutar(mercado)),
         ("Agente 2 - Analisis de Competencia",    lambda: competencia.ejecutar(mercado)),
         ("Agente 3 - Analisis de Resenas",        lambda: resenas.ejecutar(mercado)),
@@ -103,8 +118,18 @@ def ejecutar_pipeline(mercado):
     imprimir_resumen_memoria()
     imprimir_resumen_final(resultados, tiempo_total)
 
+    # Persistir análisis en BD para alimentar futuros runs.
+    # Tolerante a fallos: si guardar falla, el pipeline ya terminó correctamente.
+    try:
+        conocimiento.guardar_analisis(mercado, modo, leer_memoria())
+    except Exception as _e_guard:
+        print(f"\n  -- Análisis no guardado en historial ({_e_guard})")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Sistema Multiagente de Investigación de Mercado")
     parser.add_argument("--market", type=str, default="auriculares bluetooth", help="Nombre del mercado a analizar")
+    parser.add_argument("--mode",   type=str, default="marca_propia",
+                        choices=["marca_propia", "arbitraje"],
+                        help="Modo de análisis: marca_propia (default) | arbitraje")
     args = parser.parse_args()
-    ejecutar_pipeline(args.market)
+    ejecutar_pipeline(args.market, modo=args.mode)

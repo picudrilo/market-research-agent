@@ -50,6 +50,12 @@ def clasificar_oportunidad(df):
         if col in df.columns:
             df[col] = df[col].fillna(0)
 
+    _COLS = ["keyword", "volumen_busqueda", "competidores", "cerebro_iq_score",
+             "tendencia_30d", "title_density", "competitor_rank_avg",
+             "score_oportunidad", "nivel_oportunidad"]
+    if df.empty:
+        return pd.DataFrame(columns=_COLS)
+
     registros = []
     for _, row in df.iterrows():
         volumen      = row.get("volumen_busqueda") or 0

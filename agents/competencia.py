@@ -324,7 +324,7 @@ def generar_reporte(mercado, df, metricas, analisis_ia):
             rev = int(m.get("revenue_mensual", 0))
             r.append(
                 f"| {m['marca']} | {m['num_productos']} | {m['rating_promedio']} "
-                f"| {int(m.get('reviews_total', 0)):,} | {int(m.get('bsr_min') or 0):,} |"
+                f"| {int(m.get('reviews_total') or 0):,} | {int(v) if (v := m.get('bsr_min')) and v == v else 0:,} |"
             )
         r.append("")
 
