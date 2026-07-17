@@ -291,7 +291,7 @@ Responde ÚNICAMENTE con JSON válido, sin backticks ni explicaciones:
 }}"""
 
     respuesta = client.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-sonnet-5",
         max_tokens=4000,
         system="Eres experto en arbitraje Amazon México. Respondes siempre con JSON válido.",
         messages=[{"role": "user", "content": prompt}]

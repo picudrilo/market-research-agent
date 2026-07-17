@@ -131,7 +131,7 @@ Genera exactamente 5 bullets y 7 imágenes."""
 
     print("  Claude escribiendo el listing optimizado...")
     respuesta = client.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-sonnet-5",
         max_tokens=4000,
         system="Eres copywriter experto en Amazon México. Respondes siempre con JSON válido.",
         messages=[{"role": "user", "content": prompt}]

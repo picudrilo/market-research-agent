@@ -99,7 +99,7 @@ score_oportunidad: entero de 0 a 100"""
 
     print("  Claude evaluando arbitraje...")
     respuesta = client.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-sonnet-5",
         max_tokens=1500,
         system="Eres experto en arbitraje Amazon Mexico. Respondes siempre con JSON valido.",
         messages=[{"role": "user", "content": prompt}]
