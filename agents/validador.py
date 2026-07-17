@@ -100,7 +100,7 @@ score_oportunidad: entero de 0 a 100"""
     print("  Claude evaluando arbitraje...")
     respuesta = client.messages.create(
         model="claude-sonnet-5",
-        max_tokens=1500,
+        max_tokens=4000,
         system="Eres experto en arbitraje Amazon Mexico. Respondes siempre con JSON valido.",
         messages=[{"role": "user", "content": prompt}]
     )
@@ -117,9 +117,11 @@ score_oportunidad: entero de 0 a 100"""
         inicio = texto.find("{")
         fin    = texto.rfind("}") + 1
         try:
-            resultado = json.loads(texto[inicio:fin]) if inicio != -1 else {}
-        except (json.JSONDecodeError, ValueError):
-            resultado = {}
+            if inicio == -1:
+                raise ValueError("Respuesta de Claude sin JSON detectable")
+            resultado = json.loads(texto[inicio:fin])
+        except (json.JSONDecodeError, ValueError) as e:
+            raise RuntimeError(f"No se pudo parsear la respuesta de Claude como JSON: {e}") from e
 
     # Ensure asin is always in resultado
     if "asin" not in resultado or not resultado["asin"]:
