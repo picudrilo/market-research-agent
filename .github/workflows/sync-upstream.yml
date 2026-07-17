@@ -1,0 +1,49 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # diario a las 06:00 UTC
+  workflow_dispatch: {}    # permite dispararlo manualmente desde la pestaña Actions
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Add upstream remote
+        run: git remote add upstream https://github.com/AlexisGarciaPaz/market-research-agent.git
+
+      - name: Fetch upstream
+        run: git fetch upstream main
+
+      - name: Check for new commits
+        id: check
+        run: echo "count=$(git rev-list main..upstream/main --count)" >> "$GITHUB_OUTPUT"
+
+      - name: Create sync branch and merge
+        if: steps.check.outputs.count != '0'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          branch="sync/upstream-$(date +%Y%m%d)"
+          echo "branch=$branch" >> "$GITHUB_ENV"
+          git checkout -b "$branch"
+          git merge upstream/main --no-edit
+          git push origin "$branch"
+
+      - name: Open PR
+        if: steps.check.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create --base main --head "$branch" \
+            --title "Sync upstream: $(date +%Y-%m-%d)" \
+            --body "Sincronización automática desde AlexisGarciaPaz/market-research-agent (upstream/main). Revisar antes de mergear — verificar si hay variables de entorno nuevas o cambios de schema de base de datos antes de redeployar en Vercel/Railway."
