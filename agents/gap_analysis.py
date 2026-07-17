@@ -123,7 +123,7 @@ Genera entre 5 y 8 gaps ordenados de mayor a menor oportunidad."""
         messages=[{"role": "user", "content": prompt}]
     )
 
-    texto = respuesta.content[0].text
+    texto = next((b.text for b in respuesta.content if b.type == "text"), "")
     resultado = parsear_json_claude(texto, "gap_analysis")
     resultado["_tokens"] = {
         "entrada": respuesta.usage.input_tokens,

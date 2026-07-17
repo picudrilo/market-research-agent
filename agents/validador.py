@@ -105,7 +105,7 @@ score_oportunidad: entero de 0 a 100"""
         messages=[{"role": "user", "content": prompt}]
     )
 
-    texto = respuesta.content[0].text
+    texto = next((b.text for b in respuesta.content if b.type == "text"), "")
     if "```json" in texto:
         texto = texto.split("```json")[1].split("```")[0].strip()
     elif "```" in texto:

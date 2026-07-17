@@ -154,7 +154,7 @@ Genera exactamente 6-8 atributos diferenciadores con justificación en datos."""
         messages=[{"role": "user", "content": prompt}]
     )
 
-    texto = respuesta.content[0].text
+    texto = next((b.text for b in respuesta.content if b.type == "text"), "")
     propuesta = parsear_json_claude(texto, "concepto")
     propuesta["_tokens"] = {
         "entrada": respuesta.usage.input_tokens,

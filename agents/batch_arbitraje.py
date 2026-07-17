@@ -297,7 +297,7 @@ Responde ÚNICAMENTE con JSON válido, sin backticks ni explicaciones:
         messages=[{"role": "user", "content": prompt}]
     )
 
-    texto = respuesta.content[0].text
+    texto = next((b.text for b in respuesta.content if b.type == "text"), "")
     if "```json" in texto:
         texto = texto.split("```json")[1].split("```")[0].strip()
     elif "```" in texto:
