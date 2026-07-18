@@ -87,17 +87,30 @@ def _stem_es(palabra: str) -> str:
     return palabra
 
 
+def _prefijo_comun(a: str, b: str) -> int:
+    """Longitud del prefijo común entre dos palabras."""
+    n = 0
+    for ca, cb in zip(a, b):
+        if ca != cb:
+            break
+        n += 1
+    return n
+
+
+def _palabra_matchea(token: str, palabra: str) -> bool:
+    """Un token del query coincide con una palabra del título si es substring, o si
+    comparten un prefijo largo. El prefijo común tolera variantes morfológicas que el
+    stem simple no capta: cerveza/cervecero, termo/térmica, monohidrato/monohidratada."""
+    if token in palabra or palabra in token:
+        return True
+    pc = _prefijo_comun(token, palabra)
+    return pc >= 4 and pc >= 0.6 * min(len(token), len(palabra))
+
+
 def _contar_matches(tokens_q_stem: list, titulo: str) -> int:
-    """Cuenta cuántos tokens del query (ya stemmed) aparecen en el título.
-    Compara por substring directo y por stem de cada palabra del título, para
-    tolerar plurales en cualquier dirección (query o título)."""
-    titulo_norm = _normalizar_rel(titulo)
-    palabras_stem = [_stem_es(w) for w in re.findall(r"[a-z0-9]+", titulo_norm)]
-    matches = 0
-    for st in tokens_q_stem:
-        if st in titulo_norm or any(st in w or w in st for w in palabras_stem):
-            matches += 1
-    return matches
+    """Cuenta cuántos tokens del query aparecen en el título (con matching morfológico)."""
+    palabras = re.findall(r"[a-z0-9]+", _normalizar_rel(titulo))
+    return sum(1 for st in tokens_q_stem if any(_palabra_matchea(st, w) for w in palabras))
 
 
 def filtrar_por_relevancia(productos: list, mercado: str) -> tuple:
@@ -107,19 +120,25 @@ def filtrar_por_relevancia(productos: list, mercado: str) -> tuple:
     puede traer botellas de agua o accesorios de hidratación. Sin este filtro, los
     agentes analizan productos que no son lo que el usuario pidió.
 
-    Regla: un producto es relevante si su título contiene al menos uno de los tokens
-    significativos del mercado (con stemming de plurales). Ordena por número de
-    coincidencias (los más relevantes primero). Retorna (relevantes, descartados).
+    Regla: se exigen TODOS los tokens significativos (1-2 palabras: todos; 3+: se permite
+    que falte uno). Con matching morfológico por prefijo, así 'termo para cerveza' exige
+    termo Y cerveza → un termo de agua (tiene 'termo' pero no 'cerveza') se descarta; y
+    'creatina monohidrato' matchea 'monohidratada' por prefijo → se mantiene. Casos límite
+    (ej: 'enfriador de cerveza' sin la palabra 'termo') los rescata el fallback IA (B).
+    Ordena por número de coincidencias. Retorna (relevantes, descartados).
     """
     tokens_q = _tokens_significativos(mercado)
     if not tokens_q:
         return productos, []
     tokens_q_stem = [_stem_es(t) for t in tokens_q]
 
+    n = len(tokens_q_stem)
+    umbral = n if n <= 2 else n - 1  # 1-2 tokens: todos; 3+: permite que falte uno
+
     relevantes, descartados = [], []
     for p in productos:
         matches = _contar_matches(tokens_q_stem, p.get("titulo", ""))
-        if matches >= 1:
+        if matches >= umbral:
             p["_relevancia"] = matches
             relevantes.append(p)
         else:
