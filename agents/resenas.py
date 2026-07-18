@@ -167,6 +167,15 @@ Analiza estos pain points detectados en reseñas del mercado.
 === PAIN POINTS DETECTADOS ===
 {json.dumps(resumen_pain, ensure_ascii=False, indent=2)}
 
+=== REGLAS DE ANÁLISIS (obligatorias) ===
+1. TRAZABILIDAD: cada pain point crítico debe apoyarse en las frases_reales entregadas
+   y en su frecuencia/porcentaje. Cita la evidencia (ej: "23% de las negativas mencionan sabor").
+   No inventes pain points que no aparezcan en los datos.
+2. ACCIONABILIDAD: la "oportunidad" debe ser un atributo de producto concreto que un
+   fabricante pueda ejecutar, no un deseo genérico.
+3. Distingue el pain point REAL (frecuente y grave) del anecdótico (una sola mención).
+   Prioriza por frecuencia × gravedad, no por lo llamativo.
+
 Responde ÚNICAMENTE con JSON válido, sin backticks:
 
 {{
@@ -175,8 +184,9 @@ Responde ÚNICAMENTE con JSON válido, sin backticks:
     {{
       "tema": "nombre",
       "por_que_importa": "explicación en 1 oración",
+      "evidencia": "frase real o cifra (% de negativas) que respalda este pain point",
       "nivel_frustracion": "bloqueante | alto | moderado | menor",
-      "oportunidad": "cómo un nuevo producto puede resolver esto"
+      "oportunidad": "atributo de producto concreto que resuelve esto"
     }}
   ],
   "patrones_ocultos": ["patrón que el conteo de palabras no captura"],
@@ -190,8 +200,8 @@ Responde ÚNICAMENTE con JSON válido, sin backticks:
 
     print("  Claude analizando reseñas...")
     respuesta = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1500,
+        model="claude-sonnet-4-6",
+        max_tokens=2500,
         system="Eres analista de mercado Amazon México. Respondes siempre con JSON válido.",
         messages=[{"role": "user", "content": prompt}]
     )
@@ -259,6 +269,8 @@ def generar_reporte(mercado, fuente, df, df_neg, impacto, analisis_ia):
         for pp in analisis_ia.get("pain_points_criticos", []):
             r.append(f"\n**{pp['tema'].upper()}** — Frustración: `{pp.get('nivel_frustracion','')}`")
             r.append(f"- Por qué importa: {pp.get('por_que_importa','')}")
+            if pp.get("evidencia"):
+                r.append(f"- Evidencia: _{pp['evidencia']}_")
             r.append(f"- Oportunidad: {pp.get('oportunidad','')}")
 
         r.append("\n### Patrones")
