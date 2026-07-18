@@ -34,8 +34,14 @@ def cargar_resenas(mercado):
         print(f"  Fuente: PostgreSQL ({len(df)} reseñas)")
         return df, "postgresql"
 
-    # Fallback: buscar CSV con columnas de Review Insights en data/raw/
-    for path in RAW_DIR.glob("*.csv"):
+    # Fallback: SOLO CSVs cuyo nombre corresponde al mercado buscado.
+    # Antes se tomaba el PRIMER CSV con columnas de reseñas sin filtrar por mercado,
+    # lo que contaminaba el análisis (ej: usar reseñas de auriculares para un termo).
+    from agents.ingesta import seleccionar_archivos_por_mercado
+    todos = sorted(RAW_DIR.glob("*.csv"))
+    candidatos = seleccionar_archivos_por_mercado(mercado, todos)
+
+    for path in candidatos:
         try:
             tmp = pd.read_csv(path, encoding="utf-8-sig")
             tmp.columns = [c.strip().lower().replace(" ", "_") for c in tmp.columns]
@@ -49,7 +55,7 @@ def cargar_resenas(mercado):
         except Exception:
             continue
 
-    print("  Sin datos de reseñas — análisis desde contexto de agentes anteriores")
+    print("  Sin reseñas del mercado — análisis desde contexto (se evita usar reseñas de otra categoría)")
     return pd.DataFrame(), "vacio"
 
 
