@@ -94,22 +94,30 @@ Identifica exactamente dónde el mercado falla y dónde existe oportunidad real.
 === DATOS DE COMPETIDORES ===
 {json.dumps(competidores, ensure_ascii=False, indent=2) if competidores else "Ver contexto acumulado de agentes anteriores."}
 
+=== REGLAS DE ANÁLISIS (obligatorias) ===
+1. TRAZABILIDAD: cada gap debe apoyarse en un dato concreto — cita el pain point
+   exacto (con su frecuencia si la tienes) o la métrica del competidor que lo evidencia.
+   No inventes gaps sin sustento en los datos entregados.
+2. ACCIONABILIDAD: el campo "oportunidad" debe describir un producto/atributo concreto
+   y ejecutable, no un deseo genérico. Debe poder convertirse en una decisión de compra.
+3. Si un gap se basa solo en intuición y no en los datos, no lo incluyas.
+
 Responde ÚNICAMENTE con JSON válido, sin backticks:
 
 {{
-  "resumen_mercado": "2-3 oraciones sobre el estado actual y la oportunidad general",
+  "resumen_mercado": "2-3 oraciones sobre el estado actual y la oportunidad, citando cifras",
   "gaps": [
     {{
       "area": "nombre del área de oportunidad",
       "problema_cliente": "qué experimentan los clientes exactamente",
       "cobertura_mercado": "qué hacen o NO hacen los competidores en esta área",
-      "oportunidad": "qué debería ofrecer un nuevo producto específicamente",
+      "oportunidad": "qué debería ofrecer un nuevo producto, concreto y ejecutable",
       "impacto": "Alto | Medio | Bajo",
       "facilidad": "Alta | Media | Baja",
-      "evidencia": "dato concreto que respalda este gap"
+      "evidencia": "pain point o métrica específica que respalda este gap (con número si existe)"
     }}
   ],
-  "gap_mas_critico": "nombre del área con mayor oportunidad y por qué en 1 oración",
+  "gap_mas_critico": "área con mayor oportunidad y por qué en 1 oración, citando el dato",
   "combinacion_ganadora": "combinación de 2-3 atributos que ningún competidor tiene juntos"
 }}
 
