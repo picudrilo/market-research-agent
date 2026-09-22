@@ -19,6 +19,7 @@ import csv
 import json
 import time
 import random
+import unicodedata
 import urllib.request
 import urllib.parse
 from pathlib import Path
@@ -36,6 +37,7 @@ SCRAPERAPI_KEY       = os.getenv("SCRAPERAPI_KEY", "")
 UMBRAL_FRESCURA_DIAS = 7
 MAX_DETALLES_ASIN    = 20      # máx páginas de producto individuales por análisis
 DELAY_MIN, DELAY_MAX = 3, 6   # segundos entre requests directos (sin ScraperAPI)
+UMBRAL_RESCATE_IA    = 5       # si el filtro A deja menos de esto, se invoca el fallback IA (B)
 
 HEADERS = {
     "User-Agent": (
@@ -54,6 +56,139 @@ AUTOCOMPLETE = "https://completion.amazon.com/search/complete"
 def _slug(texto: str) -> str:
     """Normaliza texto para usar en nombres de archivo y comparaciones."""
     return re.sub(r"[^\w]", "_", texto.lower().strip())
+
+
+# ── Filtro de relevancia ──────────────────────────────────────────────────────
+
+_STOPWORDS_REL = {
+    "para", "de", "del", "la", "el", "los", "las", "con", "sin", "en", "y",
+    "por", "un", "una", "al", "a", "mejor", "comprar", "kit", "set",
+}
+
+
+def _normalizar_rel(texto: str) -> str:
+    """Minúsculas sin acentos."""
+    s = unicodedata.normalize("NFKD", str(texto)).encode("ascii", "ignore").decode("ascii")
+    return s.lower()
+
+
+def _tokens_significativos(texto: str) -> list:
+    """Tokens alfanuméricos relevantes (sin stopwords, > 2 caracteres)."""
+    toks = re.findall(r"[a-z0-9]+", _normalizar_rel(texto))
+    return [t for t in toks if t not in _STOPWORDS_REL and len(t) > 2]
+
+
+def _stem_es(palabra: str) -> str:
+    """Stem ligero para español: quita plural (-es, -s) para unificar variantes
+    como cerveza/cervezas, termo/termos, capsula/capsulas."""
+    for suf in ("es", "s"):
+        if palabra.endswith(suf) and len(palabra) - len(suf) >= 4:
+            return palabra[:-len(suf)]
+    return palabra
+
+
+def _prefijo_comun(a: str, b: str) -> int:
+    """Longitud del prefijo común entre dos palabras."""
+    n = 0
+    for ca, cb in zip(a, b):
+        if ca != cb:
+            break
+        n += 1
+    return n
+
+
+def _palabra_matchea(token: str, palabra: str) -> bool:
+    """Un token del query coincide con una palabra del título si es substring, o si
+    comparten un prefijo largo. El prefijo común tolera variantes morfológicas que el
+    stem simple no capta: cerveza/cervecero, termo/térmica, monohidrato/monohidratada."""
+    if token in palabra or palabra in token:
+        return True
+    pc = _prefijo_comun(token, palabra)
+    return pc >= 4 and pc >= 0.6 * min(len(token), len(palabra))
+
+
+def _contar_matches(tokens_q_stem: list, titulo: str) -> int:
+    """Cuenta cuántos tokens del query aparecen en el título (con matching morfológico)."""
+    palabras = re.findall(r"[a-z0-9]+", _normalizar_rel(titulo))
+    return sum(1 for st in tokens_q_stem if any(_palabra_matchea(st, w) for w in palabras))
+
+
+def filtrar_por_relevancia(productos: list, mercado: str) -> tuple:
+    """Descarta productos cuyo título no corresponde al mercado buscado (FILTRO A).
+
+    Amazon devuelve resultados 'relacionados' amplios: buscar 'termo para cerveza'
+    puede traer botellas de agua o accesorios de hidratación. Sin este filtro, los
+    agentes analizan productos que no son lo que el usuario pidió.
+
+    Regla: un producto es relevante si su título contiene AL MENOS UNO de los tokens
+    significativos del mercado (con matching morfológico por prefijo). Esto mantiene a los
+    competidores reales del tipo de producto —'termo para cerveza' conserva todos los termos
+    (incluidos genéricos como Stanley, que sí compiten)— y descarta lo que no es del tipo:
+    accesorios de botella de agua, sensores, popotes (no dicen 'termo' ni 'cerveza').
+    Se ordena por número de coincidencias, así los que combinan ambos términos (más
+    específicos, ej. termos de cerveza) quedan primero. El fallback IA (B) rescata productos
+    relevantes que usan sinónimos no cubiertos por el keyword. Retorna (relevantes, descartados).
+    """
+    tokens_q = _tokens_significativos(mercado)
+    if not tokens_q:
+        return productos, []
+    tokens_q_stem = [_stem_es(t) for t in tokens_q]
+
+    umbral = 1  # basta el token del tipo de producto; el orden prioriza los más específicos
+
+    relevantes, descartados = [], []
+    for p in productos:
+        matches = _contar_matches(tokens_q_stem, p.get("titulo", ""))
+        if matches >= umbral:
+            p["_relevancia"] = matches
+            relevantes.append(p)
+        else:
+            descartados.append(p)
+
+    relevantes.sort(key=lambda x: x.get("_relevancia", 0), reverse=True)
+    return relevantes, descartados
+
+
+def rescatar_con_ia(descartados: list, mercado: str, limite: int = 15) -> list:
+    """Fallback IA (FILTRO B): cuando el filtro por palabras deja muy pocos productos,
+    pregunta a Claude cuáles de los descartados SÍ corresponden al mercado. Cubre
+    sinónimos y variantes que el stemming no captura (ej: cerveza→cervecero).
+    Usa Haiku porque es clasificación simple. Solo se invoca cuando hace falta."""
+    if not descartados:
+        return []
+    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        return []
+
+    muestra = descartados[:limite]
+    lista = "\n".join(f"{i}. {p.get('titulo', '')[:120]}" for i, p in enumerate(muestra))
+    prompt = (
+        f'Mercado buscado: "{mercado}"\n\n'
+        f"Productos candidatos:\n{lista}\n\n"
+        "Indica cuáles corresponden al MISMO tipo de producto que el mercado buscado "
+        "(no accesorios de otra categoría ni productos distintos).\n"
+        'Responde SOLO con JSON: {"relevantes": [0, 2, 5]}'
+    )
+    try:
+        from anthropic import Anthropic
+        from agents.memoria import parsear_json_claude
+        client = Anthropic(api_key=api_key)
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=300,
+            system="Clasificas relevancia de productos. Respondes solo con JSON válido.",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        data = parsear_json_claude(resp.content[0].text, "rescate_relevancia")
+        idxs = data.get("relevantes", [])
+        rescatados = [muestra[i] for i in idxs
+                      if isinstance(i, int) and 0 <= i < len(muestra)]
+        for p in rescatados:
+            p["_relevancia"] = 1
+        return rescatados
+    except Exception as e:
+        print(f"  [scraper] Rescate IA falló: {e}")
+        return []
 
 
 # ── Bloque 1: Frescura de datos ───────────────────────────────────────────────
@@ -421,10 +556,62 @@ def scraping_busqueda_amazon(mercado: str, paginas: int = 3) -> list:
     return todos
 
 
-def scraping_detalle_asin(asin: str) -> dict:
-    """Scrapea la página de producto para obtener BSR, brand y FBA."""
+def _parsear_resenas(html: str, asin: str, mercado: str) -> list:
+    """Extrae las reseñas visibles en la página del producto (~8 más recientes).
+    No cuesta peticiones extra: reutiliza el HTML ya descargado para BSR/marca."""
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return []
+
+    soup = BeautifulSoup(html, "lxml")
+    resenas = []
+    for rev in soup.select('div[data-hook="review"], div[data-hook="cmps-review"]'):
+        # Rating: texto tipo "4.0 de 5 estrellas"
+        rating = None
+        rt = rev.select_one('[data-hook="review-star-rating"], [data-hook="cmps-review-star-rating"]')
+        if rt:
+            m = re.search(r"([0-5](?:[.,]\d)?)", rt.get_text())
+            if m:
+                try:
+                    rating = int(round(float(m.group(1).replace(",", "."))))
+                    rating = min(5, max(1, rating))
+                except Exception:
+                    rating = None
+
+        cuerpo = ""
+        bt = rev.select_one('[data-hook="review-body"]')
+        if bt:
+            cuerpo = bt.get_text(" ", strip=True)[:2000]
+
+        titulo = ""
+        tt = rev.select_one('[data-hook="review-title"]')
+        if tt:
+            # El título a veces incluye el texto del rating; tomar la última línea limpia.
+            partes = [x.strip() for x in tt.get_text("\n", strip=True).split("\n") if x.strip()]
+            titulo = (partes[-1] if partes else "")[:255]
+
+        verificada = bool(rev.select_one('[data-hook="avp-badge"]'))
+
+        if cuerpo and rating:
+            resenas.append({
+                "asin":          asin,
+                "titulo_resena": titulo or None,
+                "cuerpo":        cuerpo,
+                "rating":        rating,
+                "verificada":    verificada,
+                "mercado":       mercado,
+            })
+    return resenas
+
+
+def scraping_detalle_asin(asin: str, mercado: str = "") -> tuple:
+    """Scrapea la página de producto. Retorna (detalle, resenas):
+    detalle = BSR, brand, FBA, categoría; resenas = reseñas visibles en la página."""
     html = _fetch(f"{AMAZON_MX}/dp/{asin}")
-    return _parsear_producto(html, asin) if html else {"asin": asin}
+    if not html:
+        return {"asin": asin}, []
+    return _parsear_producto(html, asin), _parsear_resenas(html, asin, mercado)
 
 
 # ── Bloque 7: Guardar CSV compatible con ingesta.py ──────────────────────────
@@ -506,6 +693,32 @@ def guardar_como_csv(productos: list, keywords: list, mercado: str) -> tuple:
     return path_prod, path_kw
 
 
+def guardar_resenas_bd(resenas: list, mercado: str, engine=None) -> int:
+    """Inserta las reseñas scrapeadas en la tabla `resenas`. Reemplaza las previas
+    del mismo mercado (la tabla solo la puebla el scraper, así que es seguro)."""
+    if not resenas:
+        return 0
+    from sqlalchemy import create_engine as _ce, text as _text
+    if engine is None:
+        db_url = os.getenv("DATABASE_URL", "")
+        if not db_url:
+            return 0
+        engine = _ce(db_url)
+
+    cols = ["asin", "titulo_resena", "cuerpo", "rating", "verificada", "mercado"]
+    sql = _text(
+        "INSERT INTO resenas (asin, titulo_resena, cuerpo, rating, verificada, mercado) "
+        "VALUES (:asin, :titulo_resena, :cuerpo, :rating, :verificada, :mercado)"
+    )
+    n = 0
+    with engine.begin() as conn:
+        conn.execute(_text("DELETE FROM resenas WHERE mercado = :m"), {"m": mercado})
+        for r in resenas:
+            conn.execute(sql, {k: r.get(k) for k in cols})
+            n += 1
+    return n
+
+
 # ── Bloque 8: Punto de entrada ────────────────────────────────────────────────
 
 def ejecutar(mercado: str, engine=None) -> str:
@@ -541,8 +754,30 @@ def ejecutar(mercado: str, engine=None) -> str:
     # Páginas de búsqueda
     productos = scraping_busqueda_amazon(mercado, paginas=3)
 
+    # Filtro de relevancia: Amazon devuelve resultados amplios. Sin esto, los agentes
+    # analizan productos que no corresponden a lo buscado (ej: 'termo para cerveza'
+    # trayendo botellas de agua) y las conclusiones salen desviadas.
+    if productos:
+        # A) Filtro por palabras + stemming (gratis)
+        productos, descartados = filtrar_por_relevancia(productos, mercado)
+        if descartados:
+            print(f"  [scraper] {len(descartados)} productos descartados por no coincidir con '{mercado}'")
+
+        # B) Fallback IA: solo si A dejó muy pocos y hay descartados que revisar.
+        #    Rescata sinónimos/variantes que el stemming no captura.
+        if len(productos) < UMBRAL_RESCATE_IA and descartados:
+            print(f"  [scraper] Pocos relevantes ({len(productos)}) — revisando descartados con IA...")
+            rescatados = rescatar_con_ia(descartados, mercado)
+            if rescatados:
+                print(f"  [scraper] IA rescató {len(rescatados)} producto(s) relevante(s) adicional(es)")
+                productos.extend(rescatados)
+
+        if 0 < len(productos) < 3:
+            print(f"  [scraper] ADVERTENCIA: solo {len(productos)} productos relevantes para '{mercado}'.")
+            print(f"  El análisis será limitado. Considera una búsqueda más específica o subir un CSV de Helium 10.")
+
     if not productos:
-        print("  [scraper] Sin productos — guardando solo keywords")
+        print(f"  [scraper] Sin productos relevantes para '{mercado}' — guardando solo keywords")
         guardar_como_csv([], keywords, mercado)
         return "scraping"
 
@@ -552,9 +787,11 @@ def ejecutar(mercado: str, engine=None) -> str:
     asins_detallar  = asins_organicos[:MAX_DETALLES_ASIN]
 
     print(f"  [scraper] Enriqueciendo {len(asins_detallar)} ASINs orgánicos...")
+    resenas_todas = []
     for i, asin in enumerate(asins_detallar):
         print(f"    {i+1}/{len(asins_detallar)} {asin}", end=" ", flush=True)
-        detalle = scraping_detalle_asin(asin)
+        detalle, resenas_asin = scraping_detalle_asin(asin, mercado)
+        resenas_todas.extend(resenas_asin)
         for p in productos:
             if p["asin"] == asin:
                 if detalle.get("bsr"):
@@ -566,16 +803,25 @@ def ejecutar(mercado: str, engine=None) -> str:
                 p["categoria"] = detalle.get("categoria", "")
                 break
         bsr_txt = f"BSR #{detalle['bsr']}" if detalle.get("bsr") else "sin BSR"
-        print(f"→ {bsr_txt}")
+        n_rev = f", {len(resenas_asin)} reseñas" if resenas_asin else ""
+        print(f"→ {bsr_txt}{n_rev}")
 
     guardar_como_csv(productos, keywords, mercado)
+
+    # Guardar reseñas scrapeadas en la BD para que el agente de reseñas las use.
+    if resenas_todas:
+        try:
+            guardar_resenas_bd(resenas_todas, mercado, engine)
+            print(f"  [scraper] {len(resenas_todas)} reseñas guardadas en BD")
+        except Exception as e:
+            print(f"  [scraper] No se pudieron guardar reseñas: {e}")
 
     con_bsr = sum(1 for p in productos if p.get("bsr"))
     peticiones = 3 + len(asins_detallar)
     costo_usd  = peticiones * 0.00049
     print(
         f"\n  Scraping completado: {len(productos)} productos, "
-        f"{con_bsr} con BSR, {len(keywords)} keywords"
+        f"{con_bsr} con BSR, {len(keywords)} keywords, {len(resenas_todas)} reseñas"
     )
     if SCRAPERAPI_KEY:
         print(f"  Peticiones ScraperAPI: ~{peticiones} (~${costo_usd:.3f} USD)")
