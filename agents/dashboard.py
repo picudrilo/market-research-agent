@@ -267,7 +267,23 @@ def seccion_competencia(datos):
     mem = datos["memoria"]
 
     if df.empty:
-        return ""
+        # No hay productos competidores para este mercado. En vez de ocultar la
+        # sección en silencio (confunde al usuario), explicamos por qué falta.
+        return """
+<section class="section reveal">
+  <h2 class="section-title">Análisis de competencia</h2>
+  <div class="card">
+    <p style="color:#e0e0e0;line-height:1.6">
+      No se encontraron productos competidores para este mercado en la base de datos.
+    </p>
+    <p style="color:#888;font-size:0.85rem;line-height:1.6;margin-top:8px">
+      Causa probable: el scraping de Amazon no obtuvo productos (Amazon bloquea las
+      peticiones sin un proxy). Configura <code>SCRAPERAPI_KEY</code> en las variables
+      de entorno para habilitar el scraping de productos, o sube un CSV de Helium&nbsp;10
+      Xray de esta categoría a <code>data/raw</code>.
+    </p>
+  </div>
+</section>"""
 
     # Deduplicar por ASIN, preferir filas xray
     if "asin" in df.columns and "fuente" in df.columns:
