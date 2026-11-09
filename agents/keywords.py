@@ -204,6 +204,16 @@ INSTRUCCIÓN CRÍTICA: El campo "keyword_principal" debe ser SIEMPRE una keyword
 (ej: "sal artesanal mexicana", "sal marina gourmet", "sal de colima sin aditivos").
 NUNCA pongas advertencias, notas, comentarios ni texto entre corchetes en ese campo.
 
+=== REGLAS DE ANÁLISIS (obligatorias) ===
+1. TRAZABILIDAD: prioriza keywords usando los datos entregados (volumen, competidores,
+   Cerebro IQ, score). Al recomendar una keyword como principal, justifica con su métrica
+   (ej: "volumen 12,400 con solo 180 competidores = score 14").
+2. ACCIONABILIDAD: keyword_principal y secundarias deben ser términos que un comprador
+   mexicano realmente teclea en Amazon MX, no descripciones. Backend = términos que NO
+   caben en el título pero capturan búsquedas adicionales.
+3. La "oportunidad_oculta" debe apoyarse en un patrón visible en los datos (ej: keyword
+   de alto volumen con baja title_density), no en intuición pura.
+
 Responde ÚNICAMENTE con JSON válido, sin backticks:
 
 {{
@@ -234,8 +244,8 @@ Genera exactamente 5 bullets."""
 
     print("  Claude analizando estrategia de keywords...")
     respuesta = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=2000,
+        model="claude-sonnet-4-6",
+        max_tokens=2800,
         system="Eres experto en SEO Amazon México. Respondes siempre con JSON válido.",
         messages=[{"role": "user", "content": prompt}]
     )
