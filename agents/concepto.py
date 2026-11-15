@@ -113,6 +113,14 @@ de diferenciación para un NUEVO producto que va a entrar a competir en este mer
 === KEYWORDS CLAVE ===
 {json.dumps(kw_data, ensure_ascii=False)}
 
+=== REGLAS DE ANÁLISIS (obligatorias) ===
+1. TRAZABILIDAD: cada atributo diferenciador debe mapear a un pain point o gap CONCRETO
+   de las listas de arriba. En la justificación, nombra el pain point/gap específico que
+   ataca. No inventes atributos que no respondan a un hallazgo real.
+2. ACCIONABILIDAD: el concepto debe ser fabricable y vendible, no un ideal abstracto.
+   El precio_objetivo_mx debe ser coherente con el precio de entrada recomendado arriba.
+3. Si no hay suficientes pain points o gaps para sostener un atributo, no lo incluyas.
+
 Responde ÚNICAMENTE con JSON válido, sin backticks:
 
 {{
