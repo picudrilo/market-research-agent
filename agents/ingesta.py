@@ -1,6 +1,7 @@
 # agents/ingesta.py
 import os
 import re
+import unicodedata
 import pandas as pd
 from pathlib import Path
 from datetime import date, datetime
@@ -22,6 +23,63 @@ DETECTORES = {
     "asin_grabber": ["Price MX$", "Ratings", "Review Count", "Origin"],
     "inventory":    ["Fulfillment", "Stock", "Seller Rating", "Positive Feedback %"],
 }
+
+
+# ─────────────────────────────────────────────
+# SELECCIÓN DE ARCHIVOS POR MERCADO
+# ─────────────────────────────────────────────
+
+# Palabras que no aportan a la identidad del mercado. Se ignoran al comparar
+# la categoría pedida contra el nombre del archivo, para que "aceite de argán"
+# haga match con "aceite argan" sin exigir la preposición.
+_STOPWORDS = {
+    "de", "del", "la", "el", "los", "las", "para", "con", "sin", "en", "y",
+    "por", "un", "una", "al", "a",
+}
+
+
+def _tokenizar(texto: str) -> set:
+    """Normaliza a minúsculas sin acentos y devuelve el set de tokens
+    alfanuméricos significativos (sin stopwords)."""
+    s = unicodedata.normalize("NFKD", str(texto)).encode("ascii", "ignore").decode("ascii")
+    tokens = re.findall(r"[a-z0-9]+", s.lower())
+    return {t for t in tokens if t not in _STOPWORDS and len(t) > 1}
+
+
+def _keyword_de_archivo(nombre: str) -> str:
+    """Extrae la parte descriptiva del nombre de un CSV de Helium 10,
+    quitando el prefijo del exportador, la fecha y sufijos de versión.
+
+    Ej: 'Helium_10_Xray_2026-05-05-creatina monohidrato.csv' → 'creatina monohidrato'
+        'Helium_10_Xray_2026-05-06 - guantes de box.csv'      → 'guantes de box'
+    """
+    base = Path(nombre).stem
+    base = re.sub(r"helium[_ ]*10[_ ]*xray", " ", base, flags=re.I)
+    base = re.sub(r"asingrabber", " ", base, flags=re.I)
+    base = re.sub(r"helium[_ ]*10[_ ]*inventory[_ ]*levels", " ", base, flags=re.I)
+    base = re.sub(r"\d{4}-\d{2}-\d{2}", " ", base)   # fecha
+    base = re.sub(r"_\d{1,2}\b", " ", base)          # sufijo de versión _02, _3
+    return base.strip(" -_")
+
+
+def seleccionar_archivos_por_mercado(mercado: str, archivos: list) -> list:
+    """Filtra los CSVs cuyo nombre corresponde a la categoría pedida.
+
+    Regla: todos los tokens significativos del mercado deben estar presentes
+    en el nombre del archivo. Así 'creatina' trae todos los CSVs de creatina,
+    y 'creatina monohidrato' solo los que combinan ambos términos — sin
+    arrastrar las otras ~500 categorías del directorio.
+    """
+    tokens_mercado = _tokenizar(mercado)
+    if not tokens_mercado:
+        return []
+
+    seleccionados = []
+    for path in archivos:
+        tokens_archivo = _tokenizar(_keyword_de_archivo(path.name))
+        if tokens_mercado.issubset(tokens_archivo):
+            seleccionados.append(path)
+    return seleccionados
 
 
 # ─────────────────────────────────────────────
@@ -301,13 +359,28 @@ def ejecutar(mercado="suplementos"):
         archivos_csv = auto_archivos
         print(f"\n  Usando {len(archivos_csv)} archivo(s) auto-generados para '{mercado}'")
     else:
-        archivos_csv = sorted(RAW_DIR.glob("*.csv"))
+        # Análisis aislado: seleccionar solo los CSVs de data/raw/ cuyo nombre
+        # corresponde al mercado pedido. Evita mezclar las ~500 categorías del
+        # directorio en un mismo análisis.
+        todos = sorted(RAW_DIR.glob("*.csv"))
+        archivos_csv = seleccionar_archivos_por_mercado(mercado, todos)
+
+        if archivos_csv:
+            print(f"\n  Mercado '{mercado}': {len(archivos_csv)} de {len(todos)} CSVs coinciden por nombre")
+        elif todos:
+            print(f"\n  ADVERTENCIA: ningún CSV en data/raw/ coincide con '{mercado}'.")
+            print(f"  Hay {len(todos)} CSVs de otras categorías que NO se ingestarán")
+            print(f"  para no contaminar el análisis. Verifica el nombre del mercado")
+            print(f"  o agrega un CSV de Helium 10 para esta categoría.")
+            return None
 
     if not archivos_csv:
         print("\n  Sin archivos CSV en data/raw/ ni data/raw/auto/")
         return None
 
-    print(f"\n  Archivos CSV detectados: {len(archivos_csv)}")
+    print(f"\n  Archivos CSV a procesar: {len(archivos_csv)}")
+    for p in archivos_csv:
+        print(f"    - {p.name}")
 
     engine = get_engine()
     resumen = {"productos": 0, "keywords": 0, "omitidos": [], "errores": []}
