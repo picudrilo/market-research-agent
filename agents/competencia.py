@@ -203,52 +203,65 @@ Analiza la competencia en el mercado de: **{mercado}**
 === MÉTRICAS DEL MERCADO ===
 {json.dumps(metricas, ensure_ascii=False, indent=2)}
 
-=== TOP 10 PRODUCTOS POR BSR ===
+=== TOP 20 PRODUCTOS POR BSR ===
 {json.dumps(top_productos, ensure_ascii=False, indent=2)}
+
+=== REGLAS DE ANÁLISIS (obligatorias) ===
+1. TRAZABILIDAD: cada afirmación cuantitativa debe citar el dato exacto que la
+   respalda (ej: "mediana de precio MX$419", "el líder concentra 38% del revenue",
+   "top-3 marcas suman 71% de ventas"). No hagas afirmaciones vagas sin número.
+2. ACCIONABILIDAD: las recomendaciones deben ser concretas y numéricas. En vez de
+   "precio competitivo", di el rango exacto en MX$. Estima inversión inicial de
+   inventario, margen bruto aproximado y en cuántos meses se recupera si tienes datos.
+3. Si un dato no está disponible en las métricas, dilo explícitamente en vez de inventarlo.
 
 === TU ANÁLISIS ===
 Responde ÚNICAMENTE con un JSON válido, sin backticks ni texto extra:
 
 {{
-  "resumen_mercado": "descripción del mercado en 2-3 oraciones",
+  "resumen_mercado": "2-3 oraciones citando las cifras clave (tamaño, precio mediano, concentración)",
   "intensidad_competencia": "baja | media | alta | muy alta",
+  "justificacion_intensidad": "por qué, citando el dato (# competidores, concentración top-3, review velocity)",
   "marcas_dominantes": [
     {{
       "marca": "nombre",
       "posicion": "lider | retador | seguidor | nicho",
-      "ventaja_principal": "qué las hace ganar"
+      "ventaja_principal": "qué las hace ganar",
+      "evidencia": "dato que lo respalda (revenue, # productos, rating, reviews)"
     }}
   ],
   "segmentos_precio": [
     {{
       "segmento": "economico | medio | premium",
       "rango_mx": "MX$X — MX$Y",
-      "caracteristica": "qué define a este segmento"
+      "caracteristica": "qué define a este segmento y qué % del mercado ocupa"
     }}
   ],
   "barreras_entrada": [
-    "barrera concreta con datos del mercado"
+    "barrera concreta con el dato que la cuantifica (ej: reviews del líder = 1839)"
   ],
   "oportunidades_detectadas": [
     {{
-      "oportunidad": "descripción concreta",
-      "sustento": "qué dato del mercado la respalda"
+      "oportunidad": "descripción concreta y accionable",
+      "sustento": "dato específico del mercado que la respalda"
     }}
   ],
   "estrategia_recomendada": {{
-    "posicionamiento": "cómo entrar al mercado",
-    "precio_sugerido_mx": "rango recomendado",
-    "diferenciador_clave": "qué debe tener el producto para competir"
+    "posicionamiento": "cómo entrar, anclado a un segmento de precio concreto",
+    "precio_sugerido_mx": "rango exacto MX$X–MX$Y y por qué ese rango",
+    "diferenciador_clave": "qué debe tener el producto para competir",
+    "inversion_inicial_estimada_mx": "estimación de inventario inicial en MX$ o 'sin datos suficientes'",
+    "margen_bruto_estimado_pct": "margen aproximado tras fees de Amazon o 'sin datos suficientes'"
   }},
-  "riesgo_principal": "el mayor riesgo al entrar en este mercado",
-  "insight_clave": "el hallazgo más importante en 1-2 oraciones"
+  "riesgo_principal": "el mayor riesgo al entrar, con el dato que lo evidencia",
+  "insight_clave": "el hallazgo más importante en 1-2 oraciones, con cifra"
 }}"""
 
     print("  Claude analizando competencia...")
 
     respuesta = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=2500,
+        model="claude-sonnet-4-6",
+        max_tokens=3500,
         system="Eres un analista de mercado experto en ecommerce Amazon México. Respondes siempre con JSON válido.",
         messages=[{"role": "user", "content": prompt}]
     )
@@ -348,11 +361,17 @@ def generar_reporte(mercado, df, metricas, analisis_ia):
         r.append("## Análisis con Inteligencia Artificial (Claude)\n")
 
         r.append(f"**Resumen:** {analisis_ia.get('resumen_mercado', '')}")
-        r.append(f"\n**Intensidad de competencia:** `{analisis_ia.get('intensidad_competencia', '')}`\n")
+        r.append(f"\n**Intensidad de competencia:** `{analisis_ia.get('intensidad_competencia', '')}`")
+        if analisis_ia.get("justificacion_intensidad"):
+            r.append(f"  \n_{analisis_ia['justificacion_intensidad']}_")
+        r.append("")
 
         r.append("### Marcas dominantes")
         for m in analisis_ia.get("marcas_dominantes", []):
-            r.append(f"- **{m['marca']}** ({m['posicion']}): {m['ventaja_principal']}")
+            linea = f"- **{m['marca']}** ({m['posicion']}): {m['ventaja_principal']}"
+            if m.get("evidencia"):
+                linea += f" — _{m['evidencia']}_"
+            r.append(linea)
 
         r.append("\n### Segmentos de precio")
         for s in analisis_ia.get("segmentos_precio", []):
@@ -373,6 +392,10 @@ def generar_reporte(mercado, df, metricas, analisis_ia):
             r.append(f"- **Posicionamiento:** {est.get('posicionamiento', '')}")
             r.append(f"- **Precio sugerido:** {est.get('precio_sugerido_mx', '')}")
             r.append(f"- **Diferenciador clave:** {est.get('diferenciador_clave', '')}")
+            if est.get("inversion_inicial_estimada_mx"):
+                r.append(f"- **Inversión inicial estimada:** {est['inversion_inicial_estimada_mx']}")
+            if est.get("margen_bruto_estimado_pct"):
+                r.append(f"- **Margen bruto estimado:** {est['margen_bruto_estimado_pct']}")
 
         r.append(f"\n### Riesgo principal")
         r.append(analisis_ia.get("riesgo_principal", ""))
