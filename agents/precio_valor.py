@@ -123,6 +123,14 @@ Analiza la estructura de precios del mercado y recomienda el precio óptimo de e
 === TOP 5 POR REVENUE MENSUAL ===
 {json.dumps(top_revenue, ensure_ascii=False, indent=2)}
 
+=== REGLAS DE ANÁLISIS (obligatorias) ===
+1. TRAZABILIDAD: cada recomendación de precio debe justificarse con los datos entregados
+   (percentiles P25/P75, revenue por segmento, fees). Cita el número, no generalices.
+2. El margen_estimado_pct debe calcularse con la fórmula real: precio - 15% referral - fees.
+   No inventes un margen; derívalo de los números de arriba.
+3. Si el segmento de oportunidad se elige, explica con qué dato (menos productos, mejor
+   revenue por producto, o peor relación precio-valor de los competidores actuales).
+
 Responde ÚNICAMENTE con JSON válido, sin backticks:
 
 {{
@@ -141,8 +149,8 @@ Responde ÚNICAMENTE con JSON válido, sin backticks:
 
     print("  Claude analizando estrategia de precio...")
     respuesta = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1500,
+        model="claude-sonnet-4-6",
+        max_tokens=2500,
         system="Eres experto en pricing Amazon México. Respondes siempre con JSON válido.",
         messages=[{"role": "user", "content": prompt}]
     )
