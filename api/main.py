@@ -77,13 +77,20 @@ def detectar_mercado(producto: str) -> str:
     try:
         respuesta = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=50,
+            max_tokens=30,
             system=(
-                "Responde SOLO con el nombre del nicho de mercado en 1-3 palabras en espanol. "
-                "Ejemplos: suplementos, electrodomesticos, ropa deportiva, miel y mermeladas, "
-                "snacks saludables, productos de limpieza. Sin puntuacion ni explicacion."
+                "Devuelve SOLO el termino de busqueda (2-5 palabras en espanol) que un comprador "
+                "escribiria en Amazon Mexico para encontrar ESTE producto especifico. Conserva el "
+                "TIPO de producto y su caracteristica o uso distintivo. Elimina marca, modelo, "
+                "tamano, cantidad y adjetivos de relleno. NO lo generalices a una categoria amplia: "
+                "un termo para cerveza NO es 'accesorios para bebidas', es 'termo para cerveza'. "
+                "Ejemplos: 'Termo Stanley 1.4L para cerveza artesanal' -> termo para cerveza; "
+                "'Creatina monohidratada Optimum Nutrition 300g' -> creatina monohidrato; "
+                "'Audifonos Sony WH-1000XM5 bluetooth' -> audifonos bluetooth; "
+                "'Freidora de aire Ninja 5L sin aceite' -> freidora de aire. "
+                "Sin puntuacion ni explicacion."
             ),
-            messages=[{"role": "user", "content": f"Nicho de Amazon para: {producto}"}]
+            messages=[{"role": "user", "content": f"Producto: {producto}"}]
         )
         return respuesta.content[0].text.strip()
     except Exception as e:
